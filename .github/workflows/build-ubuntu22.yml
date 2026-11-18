@@ -92,10 +92,12 @@ jobs:
       - name: Restore vcpkg cache
         uses: actions/cache/restore@v4
         with:
+          # must match where vcpkg actually writes:
+          #  - VCPKG_BINARY_SOURCES points at .vcpkg-cache in the workspace
+          #  - manifest mode installs into <builddir>/vcpkg_installed
           path: |
-            ~/.cache/vcpkg/archives
-            tb/vcpkg/installed
-            tb/vcpkg_installed
+            .vcpkg-cache
+            tb/build/vcpkg_installed
           key: vcpkg-${{ env.TB_TAG }}-${{ hashFiles('tb/vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ env.TB_TAG }}-
@@ -205,10 +207,12 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
+          # must match where vcpkg actually writes:
+          #  - VCPKG_BINARY_SOURCES points at .vcpkg-cache in the workspace
+          #  - manifest mode installs into <builddir>/vcpkg_installed
           path: |
-            ~/.cache/vcpkg/archives
-            tb/vcpkg/installed
-            tb/vcpkg_installed
+            .vcpkg-cache
+            tb/build/vcpkg_installed
           key: vcpkg-${{ env.TB_TAG }}-${{ hashFiles('tb/vcpkg.json') }}
 
       - name: Upload artifact
