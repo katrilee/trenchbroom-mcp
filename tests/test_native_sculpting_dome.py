@@ -112,9 +112,11 @@ def main() -> int:
         fail("bridge not reachable", info)
 
     step(2, "document + layers")
+    wads_env = os.environ.get("TB_WADS", "")
+    wads = [w for w in wads_env.split(":") if w] if wads_env else []
     mcp_server.open_map(
-        fgd=os.environ.get("TB_FGD", "/srv/cs16/mentzer/cstrike/halflife-cs.fgd"),
-        wads=["/root/hlds/cstrike/cstrike.wad", "/root/hlds/cstrike/halflife.wad"],
+        fgd=os.environ.get("TB_FGD", ""),
+        wads=wads,
     )
     for layer in ("Layer_Dome", "Layer_Detail", "Layer_Entrance", "Layer_Triggers"):
         mcp_server.create_layer(layer)

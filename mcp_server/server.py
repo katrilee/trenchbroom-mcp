@@ -36,8 +36,8 @@ from tb_client import TbError, client  # noqa: E402
 
 WORKDIR = Path(os.environ.get("TB_MCP_WORKDIR", "/tmp/tb_mcp")).resolve()
 WORKDIR.mkdir(parents=True, exist_ok=True)
-FGD_PATH = os.environ.get("TB_FGD", "/srv/cs16/mentzer/cstrike/halflife-cs.fgd")
-CS16_DIR = os.environ.get("CS16_DIR", "/srv/cs16/mentzer")
+FGD_PATH = os.environ.get("TB_FGD", "")
+CS16_DIR = os.environ.get("CS16_DIR", "")
 
 mcp = FastMCP("trenchbroom-goldsource")
 
@@ -70,8 +70,10 @@ def _save_map(name: str = "current") -> Path:
 def _fgd():
     from fgd_parser import load_fgd
 
-    if not Path(FGD_PATH).exists():
-        raise FileNotFoundError(f"FGD not found: {FGD_PATH}")
+    if not FGD_PATH or not Path(FGD_PATH).exists():
+        raise FileNotFoundError(
+            f"FGD not found: {FGD_PATH!r} (set TB_FGD to your .fgd file path)"
+        )
     return load_fgd(FGD_PATH)
 
 
@@ -645,6 +647,8 @@ def compile_bsp(mode: str = "fast", name: str = "current") -> dict:
 @mcp.tool()
 def verify_bsp_in_rehlds(bsp_path: str, map_name: str | None = None) -> dict:
     """Copy a .bsp into the CS 1.6 server and load it, watching the console log."""
+    if not CS16_DIR:
+        raise RuntimeError("CS16_DIR is not set (point it to your HLDS/ReHLDS root directory)")
     source = Path(bsp_path)
     if not source.exists():
         raise FileNotFoundError(bsp_path)

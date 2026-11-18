@@ -69,12 +69,11 @@ def main() -> int:
         fail("unexpected protocol version", info)
 
     step(2, "new document (Valve 220 + CS 1.6 FGD + WADs)")
+    wads_env = os.environ.get("TB_WADS", "")
+    wads = [w for w in wads_env.split(":") if w] if wads_env else []
     opened = mcp_server.open_map(
-        fgd=os.environ.get("TB_FGD", "/srv/cs16/mentzer/cstrike/halflife-cs.fgd"),
-        wads=[
-            "/root/hlds/cstrike/cstrike.wad",
-            "/root/hlds/cstrike/halflife.wad",
-        ],
+        fgd=os.environ.get("TB_FGD", ""),
+        wads=wads,
     )
     print(f"    format={opened.get('mapFormat')} defs={opened.get('entityDefinitions')} "
           f"materials={opened.get('materials')}")

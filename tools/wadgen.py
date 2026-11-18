@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a GoldSource WAD2 with procedural nature textures.
 
-    python3 tools/wadgen.py --out /root/hlds/cstrike/mentzer_nature.wad
+    python3 tools/wadgen.py --out ./nature.wad
 
 Textures are seamless (all noise wraps), 8-bit paletted, power-of-two, and named
 the way a mapper expects: GRASS, GRASS_DARK, DIRT, ROCK, CLIFF, BARK, LEAVES,
@@ -330,8 +330,8 @@ def contact_sheet(out: Path, cell: int = 128) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", default="/root/hlds/cstrike/mentzer_nature.wad")
-    parser.add_argument("--sheet", default="/tmp/opencode/nature_sheet.png")
+    parser.add_argument("--out", default="./nature.wad")
+    parser.add_argument("--sheet", default="/tmp/tb_mcp/nature_sheet.png")
     args = parser.parse_args()
 
     out = Path(args.out)

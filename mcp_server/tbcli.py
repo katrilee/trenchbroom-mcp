@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-for _candidate in (_HERE, _HERE.parent / "mcp_server", Path("/root/trenchbroom-mcp/mcp_server")):
+for _candidate in (_HERE, _HERE.parent / "mcp_server"):
     if (_candidate / "tb_client.py").exists():
         sys.path.insert(0, str(_candidate))
         break

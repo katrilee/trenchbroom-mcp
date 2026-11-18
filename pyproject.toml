@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trenchbroom-mcp"
+version = "0.1.0"
+description = "Autonomous GoldSource & TrenchBroom v2026.2 MCP bridge, FastMCP server, and level design toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+wad = ["Pillow>=10.0.0"]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+trenchbroom-mcp = "mcp_server.server:main"
+tbcli = "mcp_server.tbcli:main"
+
+[tool.setuptools.packages.find]
+include = ["mcp_server*", "tools*"]
