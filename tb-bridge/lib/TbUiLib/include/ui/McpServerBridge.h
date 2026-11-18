@@ -148,6 +148,7 @@ private:
 
   // geometry / CSG
   QJsonObject geoCreateCuboid(const QJsonObject& p);
+  QJsonObject geoCreateBrushFromPoints(const QJsonObject& p);
   QJsonObject geoCreateRoomHollow(const QJsonObject& p);
   QJsonObject geoCsgSubtract(const QJsonObject& p);
   QJsonObject geoCsgUnion(const QJsonObject& p);

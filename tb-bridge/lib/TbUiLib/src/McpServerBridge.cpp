@@ -753,6 +753,7 @@ void McpServerBridge::registerHandlers()
   m_handlers["doc.set_mods"] = [this](const auto& p) { return docSetMods(p); };
 
   m_handlers["geo.create_cuboid"] = [this](const auto& p) { return geoCreateCuboid(p); };
+  m_handlers["geo.create_brush_from_points"] = [this](const auto& p) { return geoCreateBrushFromPoints(p); };
   m_handlers["geo.create_room_hollow"] = [this](const auto& p) { return geoCreateRoomHollow(p); };
   m_handlers["geo.csg_subtract"] = [this](const auto& p) { return geoCsgSubtract(p); };
   m_handlers["geo.csg_union"] = [this](const auto& p) { return geoCsgUnion(p); };
@@ -844,41 +845,70 @@ QJsonObject McpServerBridge::docNewOrOpen(const QJsonObject& p)
       "unknown game \"" + gameName + "\"; loaded game configs do not contain it"};
   }
 
-  auto created = [&]() -> Result<std::unique_ptr<MapDocument>> {
-    if (!mapPath.empty())
+  // Reuse the window we already have. Creating a second MapWindow would stack
+  // windows (and leave the old document alive), which is what an agent calling
+  // doc.new_or_open repeatedly must never do.
+  if (m_window != nullptr)
+  {
+    auto& current = document();
+    const auto applied = mapPath.empty()
+                           ? current.create(
+                               app.environmentConfig(),
+                               *gameInfo,
+                               format,
+                               MapDocument::DefaultWorldBounds)
+                           : current.load(
+                               app.environmentConfig(),
+                               *gameInfo,
+                               format,
+                               MapDocument::DefaultWorldBounds,
+                               std::filesystem::path{mapPath});
+    if (applied.is_error())
     {
-      return MapDocument::loadDocument(
+      throw McpError{
+        mcp::ErrorCode::OperationFailed,
+        "could not create/open document: " + resultError(applied)};
+    }
+  }
+  else
+  {
+    auto created = [&]() -> Result<std::unique_ptr<MapDocument>> {
+      if (!mapPath.empty())
+      {
+        return MapDocument::loadDocument(
+          app.environmentConfig(),
+          *gameInfo,
+          format,
+          MapDocument::DefaultWorldBounds,
+          std::filesystem::path{mapPath},
+          app.taskManager(),
+          app.glManager().resourceManager());
+      }
+      return MapDocument::createDocument(
         app.environmentConfig(),
         *gameInfo,
         format,
         MapDocument::DefaultWorldBounds,
-        std::filesystem::path{mapPath},
         app.taskManager(),
         app.glManager().resourceManager());
+    }();
+
+    if (created.is_error())
+    {
+      throw McpError{
+        mcp::ErrorCode::OperationFailed,
+        "could not create/open document: " + resultError(created)};
     }
-    return MapDocument::createDocument(
-      app.environmentConfig(),
-      *gameInfo,
-      format,
-      MapDocument::DefaultWorldBounds,
-      app.taskManager(),
-      app.glManager().resourceManager());
-  }();
 
-  if (created.is_error())
-  {
-    throw McpError{
-      mcp::ErrorCode::OperationFailed,
-      "could not create/open document: " + resultError(created)};
+    auto documentPtr = std::move(created).value();
+    auto* newWindow = app.mapWindowManager().createMapWindow(std::move(documentPtr));
+    if (newWindow == nullptr)
+    {
+      throw McpError{
+        mcp::ErrorCode::OperationFailed, "MapWindowManager refused the document"};
+    }
+    m_window = newWindow;
   }
-
-  auto documentPtr = std::move(created).value();
-  auto* newWindow = app.mapWindowManager().createMapWindow(std::move(documentPtr));
-  if (newWindow == nullptr)
-  {
-    throw McpError{mcp::ErrorCode::OperationFailed, "MapWindowManager refused the document"};
-  }
-  m_window = newWindow;
 
   if (!gamePath.empty())
   {
@@ -1236,6 +1266,43 @@ QJsonObject McpServerBridge::geoCreateCuboid(const QJsonObject& p)
   return result;
 }
 
+
+QJsonObject McpServerBridge::geoCreateBrushFromPoints(const QJsonObject& p)
+{
+  auto& m = map();
+
+  auto points = std::vector<vm::vec3d>{};
+  for (const auto& value : p.value(QLatin1String{"points"}).toArray())
+  {
+    points.push_back(mcp::vec3FromJson(value));
+  }
+  if (points.size() < 4)
+  {
+    throw McpError{
+      mcp::ErrorCode::InvalidParams,
+      "points[] needs at least 4 non-coplanar points (convex hull is built for you)"};
+  }
+
+  const auto material = mcp::stringFromJson(p.value(QLatin1String{"texture"}), "AAATRIGGER");
+  m.setCurrentMaterialName(material);
+
+  auto transaction = mdl::Transaction{m, "MCP geo.create_brush_from_points"};
+  const auto ok = mdl::createBrush(m, points);
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{
+      mcp::ErrorCode::OperationFailed,
+      "could not build a convex brush from those points (degenerate or coplanar)"};
+  }
+
+  auto nodes = std::vector<mdl::Node*>{m.selection().nodes};
+  auto result = QJsonObject{};
+  result.insert(QLatin1String{"ids"}, jsonFromStringVector(stampIds(nodes)));
+  result.insert(QLatin1String{"points"}, static_cast<int>(points.size()));
+  return result;
+}
+
 QJsonObject McpServerBridge::geoCreateRoomHollow(const QJsonObject& p)
 {
   auto& m = map();
@@ -1243,12 +1310,17 @@ QJsonObject McpServerBridge::geoCreateRoomHollow(const QJsonObject& p)
   const auto bounds = mcp::bboxFromJson(p.value(QLatin1String{"bounds"}));
   const auto thickness =
     static_cast<int>(mcp::numberFromJson(p.value(QLatin1String{"wall_thickness"}), 16));
-  if (!isPowerOfTwo(thickness) || thickness < 1 || thickness > 128)
+  // CSG Hollow derives the wall thickness from the grid, and Grid::setSize takes
+  // the *exponent* (1 .. 256 units), not the thickness itself. Passing the raw
+  // thickness trips the Grid contract and takes the whole process down.
+  const auto exponent = thickness > 0 ? static_cast<int>(std::lround(std::log2(thickness))) : -99;
+  if (!isPowerOfTwo(thickness) || thickness < 1 || thickness > 256
+      || exponent < mdl::Grid::MinSize || exponent > mdl::Grid::MaxSize)
   {
     throw McpError{
       mcp::ErrorCode::InvalidParams,
-      "wall_thickness must be a power of two between 1 and 128 (CSG Hollow uses the "
-      "grid size)"};
+      "wall_thickness must be a power of two between 1 and 256 units "
+      "(CSG Hollow uses the grid, whose exponent range is 2^-3 .. 2^8)"};
   }
 
   const auto wallMaterial = mcp::stringFromJson(p.value(QLatin1String{"wall_tex"}));
@@ -1276,7 +1348,7 @@ QJsonObject McpServerBridge::geoCreateRoomHollow(const QJsonObject& p)
   selectOnly(added);
 
   const auto previousGrid = m.grid().size();
-  m.grid().setSize(thickness);
+  m.grid().setSize(exponent);
   const auto hollowed = mdl::csgHollow(m);
   m.grid().setSize(previousGrid);
 
