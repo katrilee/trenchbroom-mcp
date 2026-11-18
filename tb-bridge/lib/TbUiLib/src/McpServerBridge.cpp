@@ -937,13 +937,23 @@ QJsonObject McpServerBridge::docNewOrOpen(const QJsonObject& p)
   const auto wads = mcp::stringArrayFromJson(p.value(QLatin1String{"wads"}));
   if (!wads.empty())
   {
-    auto paths = std::vector<std::filesystem::path>{};
-    paths.reserve(wads.size());
-    for (const auto& wad : wads)
+    auto joined = std::string{};
+    for (size_t i = 0; i < wads.size(); ++i)
     {
-      paths.emplace_back(wad);
+      if (i > 0)
+      {
+        joined += ';';
+      }
+      joined += wads[i];
     }
-    mdl::setEnabledMaterialCollections(map(), paths);
+    auto tx = mdl::Transaction{map(), "MCP doc.new_or_open wads"};
+    mdl::deselectAll(map());
+    mdl::setEntityProperty(map(), mdl::EntityPropertyKeys::Wad, joined);
+    tx.commit();
+  }
+  if (!gamePath.empty() || !wads.empty())
+  {
+    mdl::reloadMaterialCollections(map());
   }
 
   m_index.rebuild(document());
@@ -1766,20 +1776,61 @@ QJsonObject McpServerBridge::matLoadCollection(const QJsonObject& p)
   {
     throw McpError{mcp::ErrorCode::InvalidParams, "path is required"};
   }
-  if (!QFileInfo::exists(QString::fromStdString(wad)))
+  if (
+    std::filesystem::path{wad}.is_absolute()
+    && !QFileInfo::exists(QString::fromStdString(wad)))
   {
     throw McpError{mcp::ErrorCode::InvalidParams, "no such file: " + wad};
   }
 
-  auto collections = mdl::enabledMaterialCollections(m);
-  const auto candidate = std::filesystem::path{wad};
-  const auto alreadyLoaded =
-    std::find(collections.begin(), collections.end(), candidate) != collections.end();
+  auto currentWadStr = std::string{};
+  if (const auto* prop = m.worldNode().entity().property(mdl::EntityPropertyKeys::Wad))
+  {
+    currentWadStr = *prop;
+  }
+
+  auto wadList = std::vector<std::string>{};
+  auto alreadyLoaded = false;
+  {
+    auto start = size_t{0};
+    while (start <= currentWadStr.size())
+    {
+      const auto sep = currentWadStr.find(';', start);
+      const auto token = sep == std::string::npos ? currentWadStr.substr(start)
+                                                  : currentWadStr.substr(start, sep - start);
+      if (!token.empty())
+      {
+        if (token == wad)
+        {
+          alreadyLoaded = true;
+        }
+        wadList.push_back(token);
+      }
+      if (sep == std::string::npos)
+      {
+        break;
+      }
+      start = sep + 1;
+    }
+  }
 
   if (!alreadyLoaded)
   {
-    collections.push_back(candidate);
-    mdl::setEnabledMaterialCollections(m, collections);
+    wadList.push_back(wad);
+    auto joined = std::string{};
+    for (size_t i = 0; i < wadList.size(); ++i)
+    {
+      if (i > 0)
+      {
+        joined += ';';
+      }
+      joined += wadList[i];
+    }
+    auto tx = mdl::Transaction{m, "MCP tex.load_wad"};
+    mdl::deselectAll(m);
+    mdl::setEntityProperty(m, mdl::EntityPropertyKeys::Wad, joined);
+    tx.commit();
+    mdl::reloadMaterialCollections(m);
   }
 
   auto result = QJsonObject{};
@@ -3796,19 +3847,24 @@ QJsonObject McpServerBridge::docSetMods(const QJsonObject& p)
   auto transaction = mdl::Transaction{m, "MCP doc.set_mods"};
   mdl::setEnabledMods(m, mods);
 
-  // WADs only resolve once the mod directories are mounted, so re-apply the
-  // collection list after the mods change (this is what makes textures load).
+  // WADs only resolve once the mod directories are mounted, so update the
+  // worldspawn "wad" property and reload material collections after mods change.
   const auto wads = mcp::stringArrayFromJson(p.value(QLatin1String{"wads"}));
   if (!wads.empty())
   {
-    auto paths = std::vector<std::filesystem::path>{};
-    paths.reserve(wads.size());
-    for (const auto& wad : wads)
+    auto joined = std::string{};
+    for (size_t i = 0; i < wads.size(); ++i)
     {
-      paths.emplace_back(wad);
+      if (i > 0)
+      {
+        joined += ';';
+      }
+      joined += wads[i];
     }
-    mdl::setEnabledMaterialCollections(m, paths);
+    mdl::deselectAll(m);
+    mdl::setEntityProperty(m, mdl::EntityPropertyKeys::Wad, joined);
   }
+  mdl::reloadMaterialCollections(m);
   transaction.commit();
 
   return QJsonObject{

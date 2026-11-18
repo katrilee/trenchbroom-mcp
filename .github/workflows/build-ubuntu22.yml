@@ -222,23 +222,6 @@ jobs:
             tb/build/vcpkg_installed
           key: vcpkg-${{ env.TB_TAG }}-${{ hashFiles('tb/vcpkg.json') }}
 
-      # One-time: ship the whole build tree so later fixes can be compiled
-      # locally with `cmake --build build` (seconds instead of a 10 min CI run).
-      - name: Package build tree (incremental local builds)
-        if: always()
-        run: |
-          tar -czf build-tree.tar.gz -C tb build || true
-          du -h build-tree.tar.gz || true
-
-      - name: Upload build tree
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-tree
-          path: build-tree.tar.gz
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
