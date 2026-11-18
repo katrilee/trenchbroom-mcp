@@ -86,8 +86,11 @@ jobs:
           modules: qtimageformats
           cache: true
 
-      - name: Cache vcpkg artifacts
-        uses: actions/cache@v4
+      # Split restore/save so a FAILED build still populates the cache.
+      # actions/cache only saves on success; that is why the first four
+      # attempts each rebuilt vcpkg from scratch (~17 min wasted per run).
+      - name: Restore vcpkg cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cache/vcpkg/archives
@@ -190,6 +193,17 @@ jobs:
           kill $APP_PID 2>/dev/null || true
           echo "--- app log tail ---"
           tail -20 tb.log || true
+
+      - name: Save vcpkg cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/vcpkg/archives
+            tb/vcpkg/installed
+            tb/vcpkg_installed
+          key: vcpkg-${{ env.TB_TAG }}-${{ hashFiles('tb/vcpkg.json') }}
 
       - name: Upload artifact
         if: always()
