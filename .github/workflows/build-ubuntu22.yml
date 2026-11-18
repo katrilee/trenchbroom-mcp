@@ -158,6 +158,13 @@ jobs:
           Plugins = plugins
           EOF
 
+          # TrenchBroom's runtime resources (game configs, icons, shaders,
+          # stylesheets) are looked up next to the executable. Without them the
+          # editor reports "No Games Found" and crashes on an empty icon.
+          cp -r tb/app/TrenchBroom/resources/. dist/
+          mkdir -p dist/images
+          cp -r tb/app/TrenchBroom/resources/graphics/images/. dist/images/
+
           patchelf --set-rpath '$ORIGIN' dist/trenchbroom
           # plugins live one level down and must resolve the bundled Qt
           find dist/plugins -name '*.so' -exec patchelf --set-rpath '$ORIGIN/../..' {} \;

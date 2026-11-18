@@ -317,61 +317,264 @@ def cmd_height(args) -> None:
     print(f"{_height(gx, gy, n, args.seed, args.max_height):.0f}")
 
 
-def cmd_tree(args) -> None:
-    """Trunk + three stacked cone rings, arrayed around its own axis."""
+def _basis(axis: list[float]) -> tuple[list[float], list[float]]:
+    """Two unit vectors perpendicular to `axis`."""
     import math
 
-    clients = client()
-    x, y, z = args.at
-    r = args.radius
-    h = args.height
-    segments = args.segments
+    ax = axis
+    norm = math.sqrt(sum(c * c for c in ax)) or 1.0
+    ax = [c / norm for c in ax]
+    helper = [0.0, 0.0, 1.0] if abs(ax[2]) < 0.9 else [1.0, 0.0, 0.0]
+    u = [
+        ax[1] * helper[2] - ax[2] * helper[1],
+        ax[2] * helper[0] - ax[0] * helper[2],
+        ax[0] * helper[1] - ax[1] * helper[0],
+    ]
+    n = math.sqrt(sum(c * c for c in u)) or 1.0
+    u = [c / n for c in u]
+    v = [
+        ax[1] * u[2] - ax[2] * u[1],
+        ax[2] * u[0] - ax[0] * u[2],
+        ax[0] * u[1] - ax[1] * u[0],
+    ]
+    return u, v
 
-    clients.call(
+
+def _ring(center, axis, radius: float, sides: int):
+    import math
+
+    u, v = _basis(axis)
+    out = []
+    for k in range(sides):
+        a = 2 * math.pi * k / sides
+        out.append(
+            [
+                center[0] + radius * (math.cos(a) * u[0] + math.sin(a) * v[0]),
+                center[1] + radius * (math.cos(a) * u[1] + math.sin(a) * v[1]),
+                center[2] + radius * (math.cos(a) * u[2] + math.sin(a) * v[2]),
+            ]
+        )
+    return out
+
+
+def _rotate_axis(axis, angle: float, azimuth: float):
+    """Tilt `axis` by `angle` and spin it around itself by `azimuth`."""
+    import math
+
+    u, v = _basis(axis)
+    ca, sa = math.cos(angle), math.sin(angle)
+    cb, sb = math.cos(azimuth), math.sin(azimuth)
+    # direction in the tilted frame
+    out = [0.0, 0.0, 0.0]
+    for i in range(3):
+        out[i] = (
+            axis[i] * ca
+            + (u[i] * cb + v[i] * sb) * sa
+        )
+    n = math.sqrt(sum(c * c for c in out)) or 1.0
+    return [c / n for c in out]
+
+
+
+def _has_hull_rpc() -> bool:
+    """True when the build exposes geo.create_brush_from_points."""
+    try:
+        client().call("geo.create_brush_from_points", {"points": [[0, 0, 0]]})
+    except TbError as error:
+        return error.code != -32601
+    return True
+
+
+def _cross(a, b):
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _norm(a):
+    import math
+
+    n = math.sqrt(_dot(a, a)) or 1.0
+    return [c / n for c in a]
+
+
+def _branch_box(clients, base, axis, length, r0, r1, texture):
+    """Tapered, oriented branch built from a cuboid + vertex move + rotation.
+
+    Used when the build has no geo.create_brush_from_points: the brush is created
+    along +Z at the origin, its top face is shrunk to r1, then it is rotated onto
+    `axis` and moved to `base`. Convexity is preserved by both operations.
+    """
+    import math
+
+    ids = clients.call(
+        "geo.create_cuboid",
+        {"bounds": {"min": [-r0, -r0, 0.0], "max": [r0, r0, length]}, "texture": texture},
+    )["ids"]
+
+    # Tapering costs 4 extra RPCs per branch; only worth it on thick limbs.
+    if r0 < 14.0:
+        r1 = r0
+
+    # Shrink the top ring. Ids are content-derived and therefore go stale as soon
+    # as the geometry changes, so re-acquire the brush by its (shrinking) bounds
+    # before every move - nothing else lives at the origin while a branch is built.
+    probe = {
+        "min": [-r0 - 2.0, -r0 - 2.0, -2.0],
+        "max": [r0 + 2.0, r0 + 2.0, length + 2.0],
+    }
+    for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+        fresh = clients.call("doc.select_by_bbox", {"bounds": probe})["ids"]
+        clients.call(
+            "geo.move_vertices",
+            {
+                "ids": fresh,
+                "vertices": [[sx * r0, sy * r0, length]],
+                "delta": [sx * (r1 - r0), sy * (r1 - r0), 0.0],
+                "grid": 1,
+            },
+        )
+
+    # orient +Z onto axis
+    axis = _norm(axis)
+    if abs(_dot(axis, [0.0, 0.0, 1.0])) < 0.999999:
+        rot_axis = _cross([0.0, 0.0, 1.0], axis)
+        angle = math.degrees(math.acos(max(-1.0, min(1.0, axis[2]))))
+        # ids are content-derived, so they go stale as soon as the geometry
+        # changes; the brush is still the current selection, so use that.
+        clients.call(
+            "geo.transform",
+            {"rotate": {"center": [0, 0, 0], "axis": rot_axis, "degrees": angle}},
+        )
+
+    clients.call("geo.transform", {"translate": base})
+    return ids
+
+
+def _foliage_box(clients, centre, radius, texture):
+    return clients.call(
         "geo.create_cuboid",
         {
-            "bounds": {"min": [x - 8, y - 8, z], "max": [x + 8, y + 8, z + h * 0.55]},
-            "texture": args.bark_tex,
+            "bounds": {
+                "min": [centre[0] - radius, centre[1] - radius, centre[2] - radius * 0.7],
+                "max": [centre[0] + radius, centre[1] + radius, centre[2] + radius * 0.7],
+            },
+            "texture": texture,
         },
-    )
+    )["ids"]
 
-    made = 1
-    for level, (z_frac, r_frac) in enumerate(((0.35, 1.0), (0.58, 0.72), (0.78, 0.46))):
-        outer = max(12.0, r * r_frac)
-        inner = outer * 0.45
-        half_angle = math.pi / segments
-        half_w = outer * math.tan(half_angle)
-        z0 = z + h * z_frac
-        z1 = z0 + h * 0.22
-        wedge = clients.call(
-            "geo.create_cuboid",
-            {
-                "bounds": {
-                    "min": [x + inner, y - half_w, z0],
-                    "max": [x + outer, y + half_w, z1],
-                },
-                "texture": args.leaf_tex,
-            },
-        )
-        clients.call(
-            "geo.duplicate_and_transform",
-            {
-                "ids": wedge["ids"],
-                "count": segments - 1,
-                "translate": [0, 0, 0],
-                "rotate": {
-                    "center": [x, y, 0],
-                    "axis": [0, 0, 1],
-                    "degrees": 360.0 / segments,
-                },
-            },
-        )
-        made += segments
-    print(f"tree at {x:.0f},{y:.0f} ({made} brushes)")
+
+class TreeBuilder:
+    """Recursive branch generator: every segment is one convex prism."""
+
+    def __init__(self, args, hull: bool = True):
+        import random
+
+        self.args = args
+        self.hull = hull
+        self.rng = random.Random(args.seed)
+        self.brushes = 0
+        self.points_batches: list[tuple[list[list[float]], str]] = []
+        self.box_batches: list[tuple[list[float], list[float], float, float, float, str]] = []
+
+    def branch(self, base, axis, length, radius, depth, last=False):
+        import math
+
+        tip = [base[i] + axis[i] * length for i in range(3)]
+        r0 = radius
+        r1 = radius * (0.62 if not last else 0.45)
+        sides = self.args.sides
+
+        if self.hull:
+            pts = _ring(base, axis, r0, sides) + _ring(tip, axis, r1, sides)
+            self.points_batches.append((pts, self.args.bark_tex))
+        else:
+            self.box_batches.append((base, axis, length, r0, r1, self.args.bark_tex))
+        self.brushes += 1
+
+        if depth <= 0 or length < self.args.min_length:
+            self.foliage(tip, radius)
+            return
+
+        children = 2 if depth > 1 else 3
+        for c in range(children):
+            spread = math.radians(self.args.spread) * (1.0 + 0.25 * (c - (children - 1) / 2))
+            azimuth = 2 * math.pi * c / children + self.rng.uniform(-0.5, 0.5)
+            child_axis = _rotate_axis(axis, spread, azimuth)
+            self.branch(
+                tip,
+                child_axis,
+                length * self.args.length_falloff,
+                radius * 0.66,
+                depth - 1,
+                last=(depth == 1),
+            )
+
+    def foliage(self, centre, radius):
+        """A couple of convex leaf blobs so the tip does not look like a stick."""
+        import math
+
+        for _ in range(self.args.leaf_blobs):
+            r = max(radius * 3.0, self.args.height * 0.055) * self.rng.uniform(0.85, 1.15)
+            pts = []
+            for k in range(7):
+                a = 2 * math.pi * k / 7
+                elev = (k % 3 - 1) * 0.55
+                pts.append(
+                    [
+                        centre[0] + r * math.cos(a) * math.cos(elev),
+                        centre[1] + r * math.sin(a) * math.cos(elev),
+                        centre[2] + r * math.sin(elev) + radius,
+                    ]
+                )
+            if self.hull:
+                self.points_batches.append((pts, self.args.leaf_tex))
+            else:
+                self.box_batches.append(
+                    (centre, [0.0, 0.0, 1.0], r * 1.4, r, r, self.args.leaf_tex)
+                )
+            self.brushes += 1
+
+
+def cmd_tree(args) -> None:
+    """Procedural tree: recursive tapered branches + convex leaf blobs."""
+    import math
+
+    x, y, z = args.at
+    hull = args.method == "hull" or (args.method == "auto" and _has_hull_rpc())
+    builder = TreeBuilder(args, hull=hull)
+    builder.branch([x, y, z], [0.0, 0.0, 1.0], args.height * 0.45, args.radius, args.depth)
+
+    method = "hull" if hull else "box"
+    if args.dry_run:
+        print(f"{builder.brushes} brush(es) via {method} (dry run)")
+        return
+
+    clients = client()
+    for points, texture in builder.points_batches:
+        clients.call("geo.create_brush_from_points", {"points": points, "texture": texture})
+    for base, axis, length, r0, r1, texture in builder.box_batches:
+        _branch_box(clients, base, axis, length, r0, r1, texture)
+
+    print(f"tree at {x:.0f},{y:.0f} depth={args.depth} via {method} -> {builder.brushes} brushes")
 
 
 def cmd_layers(args) -> None:
     emit(client().call("layer.list"))
+
+
+def cmd_snapshot(args) -> None:
+    """Write a timestamped .map copy into .map_history (never touches the doc)."""
+    if args.list:
+        emit(client().call("snapshot.list"))
+        return
+    emit(client().call("snapshot.save", {"label": args.label}))
 
 
 def cmd_call(args) -> None:
@@ -489,16 +692,30 @@ def build_parser() -> argparse.ArgumentParser:
     hh.add_argument("--max-height", type=float, default=320.0)
     hh.set_defaults(func=cmd_height)
 
-    tee = sub.add_parser("tree", help="trunk + conical canopy")
+    tee = sub.add_parser("tree", help="procedural tree (recursive branches + foliage)")
     tee.add_argument("--at", type=vec, required=True)
-    tee.add_argument("--height", type=float, default=160.0)
-    tee.add_argument("--radius", type=float, default=56.0)
-    tee.add_argument("--segments", type=int, default=6)
+    tee.add_argument("--height", type=float, default=420.0)
+    tee.add_argument("--radius", type=float, default=22.0, help="trunk radius")
+    tee.add_argument("--depth", type=int, default=3, help="branching depth")
+    tee.add_argument("--sides", type=int, default=5, help="prism sides per branch")
+    tee.add_argument("--spread", type=float, default=38.0, help="branch angle (degrees)")
+    tee.add_argument("--length-falloff", type=float, default=0.72)
+    tee.add_argument("--min-length", type=float, default=60.0)
+    tee.add_argument("--leaf-blobs", type=int, default=2)
+    tee.add_argument("--seed", type=int, default=1)
     tee.add_argument("--bark-tex", default="TREE_BARK")
     tee.add_argument("--leaf-tex", default="TREE_LEAVES")
+    tee.add_argument("--dry-run", action="store_true")
+    tee.add_argument("--method", choices=("auto", "hull", "box"), default="auto",
+                     help="hull=create_brush_from_points, box=cuboid+vertex move (works on older builds)")
     tee.set_defaults(func=cmd_tree)
 
     sub.add_parser("layers", help="list layers").set_defaults(func=cmd_layers)
+
+    snp = sub.add_parser("snapshot", help="timestamped .map copy in .map_history")
+    snp.add_argument("--label", default="snap")
+    snp.add_argument("--list", action="store_true")
+    snp.set_defaults(func=cmd_snapshot)
 
     ca = sub.add_parser("call", help="raw RPC passthrough")
     ca.add_argument("method")

@@ -588,6 +588,16 @@ def make_cuboid(
 ) -> Brush:
     """Axis-aligned brush built from exact planes, never from hand-written windings."""
     (x0, y0, z0), (x1, y1, z1) = mins, maxs
+    # Per-face UV axes: u/v must be tangent to the face, otherwise the compiler
+    # reports "Texture axis perpendicular to face" and the projection is garbage.
+    axes = {
+        (1.0, 0.0, 0.0): ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (-1.0, 0.0, 0.0): ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.0, 1.0, 0.0): ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.0, -1.0, 0.0): ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.0, 0.0, 1.0): ((1.0, 0.0, 0.0), (0.0, -1.0, 0.0)),
+        (0.0, 0.0, -1.0): ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    }
     planes = [
         Plane((1.0, 0.0, 0.0), x1),
         Plane((-1.0, 0.0, 0.0), -x0),
@@ -596,7 +606,19 @@ def make_cuboid(
         Plane((0.0, 0.0, 1.0), z1),
         Plane((0.0, 0.0, -1.0), -z0),
     ]
-    faces = [Face(points=_face_points(p), plane=p, texture=texture) for p in planes]
+    faces = []
+    for plane in planes:
+        u, v = axes[plane.normal]
+        faces.append(
+            Face(
+                points=_face_points(plane),
+                plane=plane,
+                texture=texture,
+                uaxis=u,
+                vaxis=v,
+                valve220=True,
+            )
+        )
     return Brush(faces=faces, entity_class=classname)
 
 
