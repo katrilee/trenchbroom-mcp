@@ -6,7 +6,7 @@ name: build-trenchbroom-mcp
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, master]
     paths:
       - ".github/workflows/build-ubuntu22.yml"
       - "tb-bridge/**"
