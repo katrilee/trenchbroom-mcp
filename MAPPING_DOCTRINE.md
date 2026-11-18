@@ -288,3 +288,63 @@ not the plan.
   worldspawn boxes.
 * **Budget.** 16-segment dome ≈ 16–48 brushes. If `clipnodes` passes 80 % after
   one assembly, stop and convert micro-brushes before adding more.
+
+---
+
+## 11. Terrain & Vegetation (GoldSource)
+
+GoldSource has **no displacement/subdivision**. A hillside is a set of convex
+brushes whose shared edges line up. There is no "smooth" button, and moving one
+brush's vertices does not move its neighbour's (brushes do not share vertices),
+so post-hoc vertex smoothing creates cracks. Terrain must be *generated* right,
+not fixed later.
+
+### 11.1 Cells vs prisms
+
+| method | shape | look |
+|---|---|---|
+| `tb terrain --blocky` | axis-aligned boxes per cell | Minecraft stair-steps |
+| `tb terrain --smooth` | two triangular prisms per cell, sharing corner heights | continuous sloped surface |
+
+`--smooth` samples the height at cell **corners** (n+1 × n+1) and builds two
+prisms per cell from those four corners, so adjacent cells share an edge exactly.
+No cracks, no steps. It is still faceted — one flat triangle per half-cell — and
+that is the ceiling of what the engine can do.
+
+### 11.2 Cell size is the quality dial
+
+For a full-size map (8192 × 8192, the ±4096 engine limit):
+
+| `--cells` | cell size | prisms | verdict |
+|---|---|---|---|
+| 32 | 256 u | 2 048 | readable, clearly faceted |
+| 48 | 170 u | 4 608 | **recommended balance** |
+| 64 | 128 u | 8 192 | smooth, heavy: watch `clipnodes` |
+
+Budget: keep total brushes under ~4 000 and `clipnodes` under 80 % (26 000).
+A 48-cell terrain plus ~40 trees lands around 5 000 brushes — compile in
+`mode="fast"` first and read the budget report before running `hlrad`.
+
+### 11.3 Trees and other props
+
+* `tb tree --at x,y,z --height h --radius r --segments 6` builds a trunk plus
+  three conical rings (19 brushes).
+* Convert vegetation to `func_detail` (or `func_wall`) — it must not be part of
+  the seal, and it keeps `clipnodes` down.
+* Trees on slopes: place them with `tb height --at x,y` so the trunk base sits
+  on the sampled surface, not floating or buried.
+
+### 11.4 Sealing an outdoor map
+
+Terrain brushes themselves are the floor; the seal is the **skybox shell**:
+six `SKY` slabs around the playable volume (`±half+128`, floor `-512`,
+ceiling `+1500`). Do not hollow the whole map with one giant `CSG Hollow`:
+`Grid::setSize()` takes an *exponent* (2^-3 … 2^8), so a request for a 32-unit
+wall must pass exponent 5 — passing `32` violates the grid contract and takes
+the process down. The bridge converts thickness to exponent itself; raw RPC
+callers must not.
+
+### 11.5 Water and "peaceful" detail
+
+A flat `!water`-textured slab at a low height reads as a lake and costs one
+brush. Keep its top exactly on an 8-unit step so the shoreline is walkable.
