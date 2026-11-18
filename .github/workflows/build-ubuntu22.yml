@@ -1,0 +1,172 @@
+name: build-trenchbroom-mcp
+
+# Builds TrenchBroom v2026.2 + the MCP bridge on ubuntu-22.04 (glibc 2.35),
+# exactly matching the target VDS, and uploads a self-contained tarball.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-ubuntu22.yml"
+      - "tb-bridge/**"
+
+env:
+  TB_TAG: v2026.2
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout build definition
+        uses: actions/checkout@v4
+
+      - name: Clone TrenchBroom ${{ env.TB_TAG }}
+        run: |
+          git clone --branch "${TB_TAG}" --depth 1 \
+            https://github.com/TrenchBroom/TrenchBroom.git tb
+          cd tb
+          git submodule update --init --recursive --depth 1
+          git log -1 --format='TrenchBroom %H %s'
+
+      - name: Apply MCP bridge patch
+        run: |
+          cd tb
+          patch -p1 --forward < ../tb-bridge/patches/0001-build-and-mapwindow-integration.patch
+          cp ../tb-bridge/lib/TbUiLib/include/ui/Mcp*.h lib/TbUiLib/include/ui/
+          cp ../tb-bridge/lib/TbUiLib/src/Mcp*.cpp     lib/TbUiLib/src/
+          echo "--- bridge files present ---"
+          ls -1 lib/TbUiLib/src/Mcp*.cpp lib/TbUiLib/include/ui/Mcp*.h
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pandoc patchelf \
+            libgl1-mesa-dev libglu1-mesa-dev libglew-dev \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxkbcommon0 libxrender1 libxi6 libxtst6 libxss1 \
+            libfreetype6 libfontconfig1
+
+      - name: Install Qt 6.10.0
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.0"
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtimageformats
+          cache: true
+
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/vcpkg/archives
+            tb/vcpkg/installed
+          key: vcpkg-${{ env.TB_TAG }}-${{ hashFiles('tb/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ env.TB_TAG }}-
+
+      - name: Configure
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-cache,readwrite"
+        run: |
+          cd tb
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DPANDOC_PATH="$(command -v pandoc)" \
+            -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
+            -DCMAKE_INSTALL_PREFIX=/usr
+
+      - name: Build TrenchBroom
+        run: cmake --build tb/build --target TrenchBroom -j"$(nproc)"
+
+      - name: Locate binary
+        run: |
+          BIN="$(find tb/build -type f -name trenchbroom -perm -u+x | head -1)"
+          echo "binary: $BIN"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          file "$BIN"
+
+      - name: Bundle runtime
+        run: |
+          set -euo pipefail
+          mkdir -p dist/plugins
+
+          cp "$BIN" dist/trenchbroom
+          chmod +x dist/trenchbroom
+
+          # every non-system shared library next to the binary
+          ldd dist/trenchbroom | awk '{print $3}' | grep '^/' | sort -u | while read -r lib; do
+            case "$lib" in
+              /lib/*|/usr/lib/*) : ;;   # part of the target OS
+              *) cp -L "$lib" dist/ ;;
+            esac
+          done
+
+          # Qt plugins (xcb platform plugin is mandatory even under Xvfb)
+          for dir in platforms imageformats styles iconengines xcbglintegrations \
+                     platforminputcontexts wayland-shell-integration egldeviceintegrations; do
+            if [ -d "$QT_ROOT_DIR/plugins/$dir" ]; then
+              cp -rL "$QT_ROOT_DIR/plugins/$dir" "dist/plugins/$dir"
+            fi
+          done
+
+          cat > dist/qt.conf <<EOF
+          [Paths]
+          Plugins = plugins
+          EOF
+
+          patchelf --set-rpath '$ORIGIN' dist/trenchbroom
+          echo "--- bundled libraries ---"
+          ls -1 dist | head -40
+          echo "--- missing deps check ---"
+          LD_LIBRARY_PATH="$PWD/dist" ldd dist/trenchbroom | grep "not found" || echo "none missing"
+
+          tar czf trenchbroom-mcp-linux-x86_64.tar.gz -C dist .
+          du -h trenchbroom-mcp-linux-x86_64.tar.gz
+
+      - name: Smoke test headless
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb libgl1-mesa-dri libglx-mesa0
+          export LD_LIBRARY_PATH="$PWD/dist"
+          export TB_MCP_PORT=6161
+          export TB_MCP_ENABLE=1
+          timeout 40 xvfb-run -a -s "-screen 0 1280x720x24" ./dist/trenchbroom > tb.log 2>&1 &
+          APP_PID=$!
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/6161) 2>/dev/null; then
+              echo "port 6161 open after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          python3 - <<'PY'
+          import json, socket, sys
+          try:
+              s = socket.create_connection(("127.0.0.1", 6161), timeout=5)
+          except OSError as e:
+              print("BRIDGE NOT LISTENING:", e); sys.exit(1)
+          s.sendall(b'{"jsonrpc":"2.0","id":1,"method":"rpc.ping","params":{}}\n')
+          data = s.recv(65536).decode()
+          print("response:", data[:400])
+          obj = json.loads(data.splitlines()[0])
+          assert obj["result"]["protocolVersion"] == 2, obj
+          print("BRIDGE OK, methods:", len(obj["result"]["methods"]))
+          PY
+          kill $APP_PID 2>/dev/null || true
+          echo "--- app log tail ---"
+          tail -20 tb.log || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trenchbroom-mcp-linux-x86_64
+          path: trenchbroom-mcp-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 30

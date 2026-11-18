@@ -1,0 +1,86 @@
+diff --git a/lib/TbUiLib/CMakeLists.txt b/lib/TbUiLib/CMakeLists.txt
+index 31ae11f..781c9ae 100644
+--- a/lib/TbUiLib/CMakeLists.txt
++++ b/lib/TbUiLib/CMakeLists.txt
+@@ -138,6 +138,9 @@ target_sources(TbUiLib
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MapViewBase.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MapViewContainer.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MapViewToolBox.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/McpJson.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/McpNodeIndex.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/McpServerBridge.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MapWindow.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MapWindowManager.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MaterialBrowser.cpp
+diff --git a/lib/TbUiLib/include/ui/MapWindow.h b/lib/TbUiLib/include/ui/MapWindow.h
+index cb724a3..221934d 100644
+--- a/lib/TbUiLib/include/ui/MapWindow.h
++++ b/lib/TbUiLib/include/ui/MapWindow.h
+@@ -143,6 +143,9 @@ public:
+   const MapDocument& document() const;
+   MapDocument& document();
+ 
++  /** Exposed so the MCP bridge can create/open documents without the UI. */
++  AppController& appController() const;
++
+   const MapViewToolBox& toolBox() const;
+   MapViewToolBox& toolBox();
+ 
+diff --git a/lib/TbUiLib/include/ui/MapWindowManager.h b/lib/TbUiLib/include/ui/MapWindowManager.h
+index 323f805..f090d0f 100644
+--- a/lib/TbUiLib/include/ui/MapWindowManager.h
++++ b/lib/TbUiLib/include/ui/MapWindowManager.h
+@@ -79,6 +79,9 @@ public:
+     std::filesystem::path path);
+ 
+   std::vector<MapWindow*> mapWindows() const;
++
++  MapWindow* createMapWindow(std::unique_ptr<MapDocument> document);
++  void removeMapWindow(MapWindow* mapWindow);
+   MapWindow* topMapWindow() const;
+   bool allMapWindowsClosed() const;
+ 
+@@ -86,8 +89,6 @@ private:
+   void onFocusChange(QWidget* old, QWidget* now);
+ 
+   bool shouldCreateWindowForDocument() const;
+-  MapWindow* createMapWindow(std::unique_ptr<MapDocument> document);
+-  void removeMapWindow(MapWindow* mapWindow);
+ 
+   friend class MapWindow;
+ };
+diff --git a/lib/TbUiLib/src/MapWindow.cpp b/lib/TbUiLib/src/MapWindow.cpp
+index 63b389b..56b8f1b 100644
+--- a/lib/TbUiLib/src/MapWindow.cpp
++++ b/lib/TbUiLib/src/MapWindow.cpp
+@@ -19,6 +19,8 @@
+ 
+ #include "ui/MapWindow.h"
+ 
++#include "ui/McpServerBridge.h"
++
+ #include <QApplication>
+ #include <QChildEvent>
+ #include <QClipboard>
+@@ -208,6 +210,9 @@ MapWindow::MapWindow(AppController& appController, std::unique_ptr<MapDocument>
+ 
+   // act as if the document was loaded to update the UI
+   m_document->documentWasLoadedNotifier();
++
++  // Headless agent bridge (127.0.0.1 only). Honours TB_MCP_ENABLE / TB_MCP_PORT.
++  McpServerBridge::attachTo(*this);
+ }
+ 
+ MapWindow::~MapWindow()
+@@ -262,6 +267,11 @@ void MapWindow::positionOnScreen(QWidget* reference)
+   }
+ }
+ 
++AppController& MapWindow::appController() const
++{
++  return m_appController;
++}
++
+ const MapDocument& MapWindow::document() const
+ {
+   return *m_document;
