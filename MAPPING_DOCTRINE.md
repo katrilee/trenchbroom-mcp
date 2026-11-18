@@ -216,3 +216,75 @@ A map ships only when: 0 leaks, 0 issues from `val.get_issues` that are not
 explicitly waived, timings within the CT/T band, all four phase criteria met,
 `wpoly < 800`, `clipnodes < 80 %`, and `engine.launch_and_verify` reports a clean
 `qconsole.log`.
+
+---
+
+## 10. Architectural & Curved Geometry Doctrine
+
+Curved work is **not** done by generating hundreds of Python boxes. It is done by
+sculpting one primitive with TrenchBroom's native vertex/edge/face tools and
+arraying it. Any tool that restricts you to axis-aligned cuboids is a fallback,
+not the plan.
+
+### 10.1 The native tool chain (use this order)
+
+| intent | tool |
+|---|---|
+| inspect what you are about to sculpt | `get_brush_topology(ids)` → vertices, edges, face normals, UV |
+| add resolution to a face | `add_vertex` / `move_vertices` |
+| bend a rib, taper a pier | `move_edges` |
+| push/pull a surface | `move_faces` |
+| create a lip, moulding, step band | `extrude_faces` |
+| slant a buttress | `shear` |
+| make the second half of a symmetric vault | `flip` |
+| array a segment around an axis | `duplicate_and_transform` |
+| lock UVs on a curved run | `align_uv_to_face` / `copy_uv_between_faces` / `fit_texture` |
+| select a whole room interior | `select_inside` / `select_touching` |
+| clean screenshots of one assembly | `isolate_selection` → `inspect_3d_camera` → `unhide_all` |
+
+### 10.2 Domes and cupolas
+
+1. **Base wedge.** Build one rib/wedge brush in `Layer_Detail`
+   (`build_room` is wrong here — use `geo.create_cuboid` then `move_vertices`).
+2. **Curve it.** Pull the inner vertices up and in with `move_vertices`
+   (2–4 steps per rib). Check convexity after every step: a rejected move means
+   the shape went non-convex, which GoldSource cannot compile.
+3. **Array it.** `duplicate_and_transform(count=15, rotate_degrees=22.5,
+   rotate_axis=[0,0,1], rotate_center=<dome centre>)` → 16 segments.
+4. **Texture.** `select_inside` or select the ring, then `fit_texture` and
+   `copy_uv_between_faces` from one segment so the stone courses wrap without a
+   seam. Never leave `scale` outside 0.25–4.0 (`Bad surface extents`).
+5. **Inspect.** `isolate_selection` → `inspect_3d_camera` from inside and
+   outside → optionally `set_render_mode(edges=true)` for a wireframe check →
+   `unhide_all`.
+6. **Optimise.** Convert the ring to `func_detail` and set `_phong "1"` /
+   `_phong_angle "89"` so the 16 flat segments shade as a curve.
+7. **Seal.** `func_detail` does not seal. A `SKY` brush above the dome closes
+   the volume; verify with `compile_bsp(mode="fast")` that hull 2 reports no leak.
+
+### 10.3 Arches and vaults
+
+* Build the **voussoir** (one stone) as a clipped wedge: `create_cuboid` +
+  `geo.clip_brush` with three points across the springing line.
+* Build one half of the arch, then `flip(axis="x")` to make it symmetric — do
+  not model both halves by hand.
+* Alternate `extrude_faces` along the arch to give the ring depth (archivolt).
+* Wrap the stone texture with `copy_uv_between_faces` from the first voussoir:
+  this is what prevents the visible seam at every joint.
+
+### 10.4 GoldSource safety rules for sculpted geometry
+
+* **Snap before you compile.** `snap_vertices(grid=1)` minimum; structural
+  shells must be on 8 or 16. Off-grid vertices create slivers, and slivers
+  become `MAX_MAP_CLIPNODES` or `Bad surface extents`.
+* **Every vertex edit is a convexity test.** `move_vertices` and `move_edges`
+  roll back and report failure when the result is not convex. A failure is
+  information: the target point is outside the brush's convex hull. Re-split the
+  brush instead of forcing the move.
+* **`val.get_issues` after every sculpting batch.** Non-convex brushes and
+  degenerate faces must be zero before any compile.
+* **Curved geometry is detail, never structure.** Domes, vaults, arches and
+  ribbing live in `func_detail` / `func_wall`; the sealing shell stays as simple
+  worldspawn boxes.
+* **Budget.** 16-segment dome ≈ 16–48 brushes. If `clipnodes` passes 80 % after
+  one assembly, stop and convert micro-brushes before adding more.

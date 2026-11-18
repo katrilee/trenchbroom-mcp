@@ -659,6 +659,232 @@ def verify_bsp_in_rehlds(bsp_path: str, map_name: str | None = None) -> dict:
     }
 
 
+
+
+# ---------------------------------------------------------------------------
+# native sculpting: vertex / edge / face
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def select_ids(ids: list[str]) -> dict:
+    """Select nodes by bridge id (prerequisite for most sculpting tools)."""
+    return _jsonable(client().call("doc.select_by_id", {"ids": ids}))
+
+
+@mcp.tool()
+def get_brush_topology(ids: list[str]) -> dict:
+    """Exact vertices, edges and faces (normal, plane points, material, UV) of brushes.
+
+    Use the returned `vertex_indices` / `edges` to address geometry precisely
+    instead of guessing coordinates.
+    """
+    return _jsonable(client().call("geo.get_brush_topology", {"ids": ids}))
+
+
+@mcp.tool()
+def move_vertices(
+    ids: list[str],
+    vertices: list[list[float]],
+    delta: list[float],
+    grid: int = 1,
+) -> dict:
+    """Translate brush vertices by delta using TrenchBroom's native vertex move.
+
+    The move is rejected (and rolled back) if it would make a brush non-convex.
+    """
+    return _jsonable(
+        client().call(
+            "geo.move_vertices",
+            {"ids": ids, "vertices": vertices, "delta": delta, "grid": grid},
+        )
+    )
+
+
+@mcp.tool()
+def move_edges(
+    ids: list[str],
+    edges: list[list[list[float]]],
+    delta: list[float],
+    grid: int = 1,
+) -> dict:
+    """Translate brush edges (each edge is [[x,y,z],[x,y,z]])."""
+    return _jsonable(
+        client().call(
+            "geo.move_edges", {"ids": ids, "edges": edges, "delta": delta, "grid": grid}
+        )
+    )
+
+
+@mcp.tool()
+def move_faces(
+    ids: list[str], faces: list[list[list[float]]], delta: list[float]
+) -> dict:
+    """Translate whole brush faces along an arbitrary vector."""
+    return _jsonable(
+        client().call("geo.move_faces", {"ids": ids, "faces": faces, "delta": delta})
+    )
+
+
+@mcp.tool()
+def extrude_faces(
+    ids: list[str],
+    distance: float = 16.0,
+    faces: list[list[list[float]]] | None = None,
+    delta: list[float] | None = None,
+) -> dict:
+    """Extrude brush faces (default: every face of the given brushes)."""
+    params: dict[str, Any] = {"ids": ids, "distance": distance}
+    if faces:
+        params["faces"] = faces
+    if delta:
+        params["delta"] = delta
+    return _jsonable(client().call("geo.extrude_faces", params))
+
+
+@mcp.tool()
+def add_vertex(ids: list[str], position: list[float]) -> dict:
+    """Insert a vertex at `position` into the selected brushes."""
+    return _jsonable(client().call("geo.add_vertex", {"ids": ids, "position": position}))
+
+
+@mcp.tool()
+def remove_vertices(ids: list[str], vertices: list[list[float]]) -> dict:
+    """Remove vertices at the given positions."""
+    return _jsonable(
+        client().call("geo.remove_vertices", {"ids": ids, "vertices": vertices})
+    )
+
+
+@mcp.tool()
+def snap_vertices(ids: list[str] | None = None, grid: float = 1.0) -> dict:
+    """Snap vertices to the grid (use before compiling structural geometry)."""
+    params: dict[str, Any] = {"grid": grid}
+    if ids:
+        params["ids"] = ids
+    return _jsonable(client().call("geo.snap_vertices", params))
+
+
+@mcp.tool()
+def shear(ids: list[str], side: list[float], delta: list[float]) -> dict:
+    """Shear the selection along a bounding-box side (ramps, buttresses)."""
+    return _jsonable(client().call("geo.shear", {"ids": ids, "side": side, "delta": delta}))
+
+
+@mcp.tool()
+def flip(ids: list[str], axis: str = "x") -> dict:
+    """Mirror the selection across its own centre (axis: x|y|z)."""
+    return _jsonable(client().call("geo.flip", {"ids": ids, "axis": axis}))
+
+
+@mcp.tool()
+def duplicate_and_transform(
+    ids: list[str],
+    count: int,
+    translate: list[float] | None = None,
+    rotate_center: list[float] | None = None,
+    rotate_axis: list[float] | None = None,
+    rotate_degrees: float = 0.0,
+) -> dict:
+    """Clone the selection N times, applying incremental rotate+translate per step.
+
+    One atomic transaction: a 16-segment dome is `count=15, rotate_degrees=22.5`
+    around the vertical axis through the dome centre.
+    """
+    params: dict[str, Any] = {
+        "ids": ids,
+        "count": count,
+        "translate": translate or [0, 0, 0],
+    }
+    if rotate_degrees:
+        params["rotate"] = {
+            "center": rotate_center or [0, 0, 0],
+            "axis": rotate_axis or [0, 0, 1],
+            "degrees": rotate_degrees,
+        }
+    return _jsonable(client().call("geo.duplicate_and_transform", params))
+
+
+# ---------------------------------------------------------------------------
+# native UV tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def fit_texture(direction: str = "horizontal") -> dict:
+    """Fit the material across the selected faces (UV reset by native fitUV)."""
+    return _jsonable(client().call("tex.fit_texture", {"direction": direction}))
+
+
+@mcp.tool()
+def align_uv_to_face() -> dict:
+    """Align UV axes to the first selected face (continuous wrap on curves)."""
+    return _jsonable(client().call("tex.align_to_face"))
+
+
+@mcp.tool()
+def align_uv_to_world() -> dict:
+    """Snap UV axes to world axes (Valve 220 paraxial projection)."""
+    return _jsonable(client().call("tex.align_to_world"))
+
+
+@mcp.tool()
+def copy_uv_between_faces(
+    source_id: str, source_face: int = 0, target_ids: list[str] | None = None
+) -> dict:
+    """Project one face's UV system onto other brushes' faces (seam matching)."""
+    params: dict[str, Any] = {"source_id": source_id, "source_face": source_face}
+    if target_ids:
+        params["target_ids"] = target_ids
+    return _jsonable(client().call("tex.copy_uv_between_faces", params))
+
+
+# ---------------------------------------------------------------------------
+# native spatial selection and visibility
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def select_touching() -> dict:
+    """Expand the selection to every brush touching it."""
+    return _jsonable(client().call("sel.select_touching"))
+
+
+@mcp.tool()
+def select_inside() -> dict:
+    """Select nodes contained inside the current selection (room interior)."""
+    return _jsonable(client().call("sel.select_inside"))
+
+
+@mcp.tool()
+def isolate_selection() -> dict:
+    """Hide everything except the selection (clean screenshots of one assembly)."""
+    return _jsonable(client().call("view.isolate_selection"))
+
+
+@mcp.tool()
+def hide_selection() -> dict:
+    """Hide the selection."""
+    return _jsonable(client().call("view.hide_selection"))
+
+
+@mcp.tool()
+def unhide_all() -> dict:
+    """Restore all hidden nodes."""
+    return _jsonable(client().call("view.unhide_all"))
+
+
+@mcp.tool()
+def set_render_mode(edges: bool | None = None, shade_faces: bool | None = None) -> dict:
+    """Toggle viewport wireframe edges / face shading for topology screenshots."""
+    params: dict[str, Any] = {}
+    if edges is not None:
+        params["edges"] = edges
+    if shade_faces is not None:
+        params["shade_faces"] = shade_faces
+    return _jsonable(client().call("view.set_render_mode", params))
+
+
 def main() -> None:
     mcp.run()
 
