@@ -1,5 +1,5 @@
 diff --git a/lib/TbUiLib/CMakeLists.txt b/lib/TbUiLib/CMakeLists.txt
-index 31ae11f..781c9ae 100644
+index 31ae11f..936b860 100644
 --- a/lib/TbUiLib/CMakeLists.txt
 +++ b/lib/TbUiLib/CMakeLists.txt
 @@ -138,6 +138,9 @@ target_sources(TbUiLib
@@ -12,6 +12,16 @@ index 31ae11f..781c9ae 100644
      ${CMAKE_CURRENT_SOURCE_DIR}/src/MapWindow.cpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/MapWindowManager.cpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/MaterialBrowser.cpp
+@@ -385,6 +388,9 @@ target_sources(TbUiLib
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/MaterialBrowser.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/MaterialBrowserView.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/MaterialCollectionEditor.h
++    ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/McpJson.h
++    ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/McpNodeIndex.h
++    ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/McpServerBridge.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/MiniToolBarLayout.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/ModEditor.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/ui/MousePreferencePane.h
 diff --git a/lib/TbUiLib/include/ui/MapWindow.h b/lib/TbUiLib/include/ui/MapWindow.h
 index cb724a3..221934d 100644
 --- a/lib/TbUiLib/include/ui/MapWindow.h
