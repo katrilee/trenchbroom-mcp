@@ -82,7 +82,7 @@ public:
 
   using Handler = std::function<QJsonObject(const QJsonObject&)>;
 
-  explicit McpServerBridge(MapWindow& window, QObject* parent = nullptr);
+  explicit McpServerBridge(MapWindow* window, QObject* parent = nullptr);
   ~McpServerBridge() override;
 
   bool start(quint16 port = DefaultPort);
@@ -97,6 +97,16 @@ public:
 
   static McpServerBridge* instance();
   static McpServerBridge* attachTo(MapWindow& window);
+
+  /**
+   * Starts the singleton with no window attached.
+   *
+   * TrenchBroom opens a Welcome window before any MapWindow exists, so a
+   * bridge attached only to MapWindow would not listen until the user opens
+   * a map — which is exactly what an agent cannot do. AppController starts
+   * it here; MapWindow::attachTo() retargets it later.
+   */
+  static McpServerBridge* startGlobal(QObject* parent);
 
 private slots:
   void onNewConnection();

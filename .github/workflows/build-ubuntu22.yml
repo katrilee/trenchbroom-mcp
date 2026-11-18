@@ -139,6 +139,10 @@ jobs:
             esac
           done
 
+          # Qt runtime: the app's ldd does not mention the QPA plugin's own
+          # dependencies (libQt6XcbQpa), so copy the whole Qt6 set.
+          cp -L "$QT_ROOT_DIR"/lib/libQt6*.so.6* dist/ 2>/dev/null || true
+
           # Qt plugins (xcb platform plugin is mandatory even under Xvfb)
           for dir in platforms imageformats styles iconengines xcbglintegrations \
                      platforminputcontexts wayland-shell-integration egldeviceintegrations; do
@@ -153,6 +157,8 @@ jobs:
           EOF
 
           patchelf --set-rpath '$ORIGIN' dist/trenchbroom
+          # plugins live one level down and must resolve the bundled Qt
+          find dist/plugins -name '*.so' -exec patchelf --set-rpath '$ORIGIN/../..' {} \;
           echo "--- bundled libraries ---"
           ls -1 dist | head -40
           echo "--- missing deps check ---"

@@ -248,9 +248,9 @@ QJsonArray jsonFromStringVector(const std::vector<std::string>& values)
 // construction / lifecycle
 // ---------------------------------------------------------------------------
 
-McpServerBridge::McpServerBridge(MapWindow& window, QObject* parent)
+McpServerBridge::McpServerBridge(MapWindow* window, QObject* parent)
   : QObject{parent}
-  , m_window{&window}
+  , m_window{window}
 {
   registerHandlers();
 
@@ -370,7 +370,41 @@ McpServerBridge* McpServerBridge::attachTo(MapWindow& window)
     return existing;
   }
 
-  auto* bridge = new McpServerBridge{window, &window};
+  auto* bridge = new McpServerBridge{&window, &window};
+  if (!bridge->start(port))
+  {
+    bridge->deleteLater();
+    return nullptr;
+  }
+  return bridge;
+}
+
+McpServerBridge* McpServerBridge::startGlobal(QObject* parent)
+{
+  if (const auto* enabled = std::getenv("TB_MCP_ENABLE"))
+  {
+    if (std::string{enabled} == "0")
+    {
+      return nullptr;
+    }
+  }
+
+  if (auto* existing = instance(); existing != nullptr)
+  {
+    return existing;
+  }
+
+  auto port = static_cast<quint16>(DefaultPort);
+  if (const auto* portEnv = std::getenv("TB_MCP_PORT"))
+  {
+    const auto parsed = std::atoi(portEnv);
+    if (parsed > 0)
+    {
+      port = static_cast<quint16>(parsed);
+    }
+  }
+
+  auto* bridge = new McpServerBridge{nullptr, parent};
   if (!bridge->start(port))
   {
     bridge->deleteLater();
@@ -557,7 +591,10 @@ QJsonObject McpServerBridge::execute(const QJsonObject& request)
       return response;
     }
 
-    m_index.rebuild(document());
+    if (m_window != nullptr)
+    {
+      m_index.rebuild(document());
+    }
     response.insert(QLatin1String{"result"}, handlerIt->second(params));
   }
   catch (const McpError& error)
@@ -606,6 +643,12 @@ MapWindow& McpServerBridge::requireWindow() const
 
 MapDocument& McpServerBridge::document() const
 {
+  if (m_window == nullptr)
+  {
+    throw McpError{
+      mcp::ErrorCode::NoDocument,
+      "no document is open; call doc.new_or_open first"};
+  }
   return requireWindow().document();
 }
 

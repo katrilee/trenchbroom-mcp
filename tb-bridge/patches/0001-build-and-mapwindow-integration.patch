@@ -59,6 +59,31 @@ index 323f805..f090d0f 100644
  
    friend class MapWindow;
  };
+diff --git a/lib/TbUiLib/src/AppController.cpp b/lib/TbUiLib/src/AppController.cpp
+index 9107bf5..96884a5 100644
+--- a/lib/TbUiLib/src/AppController.cpp
++++ b/lib/TbUiLib/src/AppController.cpp
+@@ -19,6 +19,8 @@
+ 
+ #include "ui/AppController.h"
+ 
++#include "ui/McpServerBridge.h"
++
+ #include <QDesktopServices>
+ #include <QFileDialog>
+ #include <QMessageBox>
+@@ -196,6 +198,11 @@ AppController::AppController(
+ 
+   m_reloadRecentDocumentsTimer->start(1s);
+   m_processResourcesTimer->start(20ms);
++
++  // Headless agent bridge. Started here, not in MapWindow, because TrenchBroom
++  // shows a Welcome window before any document exists; an agent needs the
++  // endpoint up so it can create that document itself.
++  McpServerBridge::startGlobal(this);
+ }
+ 
+ Result<std::unique_ptr<AppController>> AppController::create()
 diff --git a/lib/TbUiLib/src/MapWindow.cpp b/lib/TbUiLib/src/MapWindow.cpp
 index 63b389b..56b8f1b 100644
 --- a/lib/TbUiLib/src/MapWindow.cpp
