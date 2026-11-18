@@ -60,6 +60,7 @@
 #include "mdl/Map_Nodes.h"
 #include "mdl/Map_NodeVisibility.h"
 #include "mdl/Map_Selection.h"
+#include "mdl/Map_World.h"
 #include "mdl/UVCoordSystem.h"
 #include "mdl/MapFormat.h"
 #include "mdl/Node.h"
@@ -749,6 +750,7 @@ void McpServerBridge::registerHandlers()
   m_handlers["doc.select_all"] = [this](const auto& p) { return docSelectAll(p); };
   m_handlers["doc.selection"] = [this](const auto& p) { return docSelection(p); };
   m_handlers["doc.list_nodes"] = [this](const auto& p) { return docListNodeIds(p); };
+  m_handlers["doc.set_mods"] = [this](const auto& p) { return docSetMods(p); };
 
   m_handlers["geo.create_cuboid"] = [this](const auto& p) { return geoCreateCuboid(p); };
   m_handlers["geo.create_room_hollow"] = [this](const auto& p) { return geoCreateRoomHollow(p); };
@@ -3696,5 +3698,43 @@ QJsonObject McpServerBridge::viewSetRenderMode(const QJsonObject& p)
 
   return applied;
 }
+
+
+QJsonObject McpServerBridge::docSetMods(const QJsonObject& p)
+{
+  auto& m = map();
+
+  const auto mods = mcp::stringArrayFromJson(p.value(QLatin1String{"mods"}));
+  if (mods.empty())
+  {
+    throw McpError{mcp::ErrorCode::InvalidParams, "mods[] is required"};
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP doc.set_mods"};
+  mdl::setEnabledMods(m, mods);
+
+  // WADs only resolve once the mod directories are mounted, so re-apply the
+  // collection list after the mods change (this is what makes textures load).
+  const auto wads = mcp::stringArrayFromJson(p.value(QLatin1String{"wads"}));
+  if (!wads.empty())
+  {
+    auto paths = std::vector<std::filesystem::path>{};
+    paths.reserve(wads.size());
+    for (const auto& wad : wads)
+    {
+      paths.emplace_back(wad);
+    }
+    mdl::setEnabledMaterialCollections(m, paths);
+  }
+  transaction.commit();
+
+  return QJsonObject{
+    {QLatin1String{"mods"}, jsonFromStringVector(mods)},
+    {QLatin1String{"materials"},
+     static_cast<int>(m.materialManager().materials().size())},
+    {QLatin1String{"collections"},
+     static_cast<int>(mdl::enabledMaterialCollections(m).size())}};
+}
+
 
 } // namespace tb::ui

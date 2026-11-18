@@ -96,9 +96,18 @@ def bridge_info() -> dict:
     return _jsonable(client().ping())
 
 
+GAME_ALIASES = {
+    "cstrike": "Half-Life",
+    "cs": "Half-Life",
+    "cs16": "Half-Life",
+    "counter-strike": "Half-Life",
+    "counterstrike": "Half-Life",
+}
+
+
 @mcp.tool()
 def open_map(
-    game: str = "Cstrike",
+    game: str = "Half-Life",
     game_path: str | None = None,
     fgd: str | None = None,
     wads: list[str] | None = None,
@@ -114,7 +123,37 @@ def open_map(
         params["wads"] = wads
     if map_path:
         params["map_path"] = map_path
-    return _jsonable(client().call("doc.new_or_open", params))
+
+    candidates = [game]
+    alias = GAME_ALIASES.get(game.lower())
+    if alias and alias != game:
+        candidates.append(alias)
+    if "Half-Life" not in candidates:
+        candidates.append("Half-Life")
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        params["game"] = candidate
+        try:
+            return _jsonable(client().call("doc.new_or_open", params))
+        except TbError as error:
+            last_error = error
+            if error.code != -32003:
+                raise
+    raise last_error  # type: ignore[misc]
+
+
+@mcp.tool()
+def set_mods(mods: list[str], wads: list[str] | None = None) -> dict:
+    """Enable game mods (e.g. ["cstrike"]) so WADs resolve, then mount the WADs.
+
+    Textures never load until the mod is enabled: TrenchBroom resolves material
+    collections inside the mod directories.
+    """
+    params: dict[str, Any] = {"mods": mods}
+    if wads:
+        params["wads"] = wads
+    return _jsonable(client().call("doc.set_mods", params))
 
 
 @mcp.tool()

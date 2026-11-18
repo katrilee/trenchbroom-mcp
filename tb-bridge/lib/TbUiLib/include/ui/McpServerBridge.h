@@ -144,6 +144,7 @@ private:
   QJsonObject docSelectAll(const QJsonObject& p);
   QJsonObject docSelection(const QJsonObject& p);
   QJsonObject docListNodeIds(const QJsonObject& p);
+  QJsonObject docSetMods(const QJsonObject& p);
 
   // geometry / CSG
   QJsonObject geoCreateCuboid(const QJsonObject& p);
