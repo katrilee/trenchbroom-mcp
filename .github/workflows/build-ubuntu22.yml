@@ -28,7 +28,8 @@ jobs:
           git clone --branch "${TB_TAG}" --depth 1 \
             https://github.com/TrenchBroom/TrenchBroom.git tb
           cd tb
-          git submodule update --init --recursive --depth 1
+          # vcpkg needs its full history: it checks out pinned port trees
+          git submodule update --init --recursive
           git log -1 --format='TrenchBroom %H %s'
 
       - name: Apply MCP bridge patch
@@ -67,6 +68,7 @@ jobs:
           path: |
             ~/.cache/vcpkg/archives
             tb/vcpkg/installed
+            tb/vcpkg_installed
           key: vcpkg-${{ env.TB_TAG }}-${{ hashFiles('tb/vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ env.TB_TAG }}-
@@ -81,6 +83,7 @@ jobs:
             -DBUILD_TESTING=OFF \
             -DPANDOC_PATH="$(command -v pandoc)" \
             -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
+            -DCMAKE_MAKE_PROGRAM="$(command -v ninja)" \
             -DCMAKE_INSTALL_PREFIX=/usr
 
       - name: Build TrenchBroom
