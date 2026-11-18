@@ -343,28 +343,30 @@ def _read_budgets(result: CompileResult, work: Path, stem: str) -> None:
 
     # lightdata / visdata come from the BSP itself
     bsp = work / f"{stem}.bsp"
-    if bsp.exists():
-        try:
-            data = bsp.read_bytes()
-            if len(data) > 124:
-                import struct
+    if not bsp.exists():
+        return
+    try:
+        import struct
 
-                lumps = struct.unpack_from("<15i", data, 4)
-                # lump order: entities, planes, textures, vertexes, visibility,
-                # nodes, texinfo, faces, lighting, clipnodes, leafs, marksurfaces,
-                # edges, surfedges, models
-                if len(lumps) >= 15:
-                    def lump_size(offset: int) -> int:
-                        return abs(lumps[offset + 1])
+        data = bsp.read_bytes()
+        if len(data) < 4 + 30 * 4:
+            return
+        # BSP v30 header: int version; then 15 lumps of {int offset; int length}
+        lumps = struct.unpack_from("<30i", data, 4)
 
-                    visibility = lump_size(8)
-                    lighting = lump_size(16)
-                    result.budgets["visdata"] = visibility / LIMITS["visdata"] * 100.0
-                    result.budgets["visdata_used"] = float(visibility)
-                    result.budgets["lighting"] = lighting / LIMITS["lighting"] * 100.0
-                    result.budgets["lighting_used"] = float(lighting)
-        except (OSError, struct.error):
-            pass
+        def lump_length(index: int) -> int:
+            return lumps[index * 2 + 1]
+
+        # 0 entities, 1 planes, 2 miptex, 3 vertexes, 4 visibility, 5 nodes,
+        # 6 texinfo, 7 faces, 8 lighting, 9 clipnodes, 10 leafs, ...
+        visibility = lump_length(4)
+        lighting = lump_length(8)
+        result.budgets["visdata"] = visibility / LIMITS["visdata"] * 100.0
+        result.budgets["visdata_used"] = float(visibility)
+        result.budgets["lighting"] = lighting / LIMITS["lighting"] * 100.0
+        result.budgets["lighting_used"] = float(lighting)
+    except (OSError, struct.error):
+        return
 
 
 def format_result(result: CompileResult) -> str:

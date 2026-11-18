@@ -58,12 +58,18 @@
 #include "mdl/Map_Groups.h"
 #include "mdl/Map_Layers.h"
 #include "mdl/Map_Nodes.h"
+#include "mdl/Map_NodeVisibility.h"
 #include "mdl/Map_Selection.h"
+#include "mdl/UVCoordSystem.h"
 #include "mdl/MapFormat.h"
 #include "mdl/Node.h"
 #include "mdl/Transaction.h"
 #include "mdl/UpdateBrushFaceAttributes.h"
 #include "mdl/WorldNode.h"
+
+#include "PreferenceManager.h"
+#include "Preferences.h"
+#include "vm/mat.h"
 
 #include "ui/AppController.h"
 #include "ui/MapDocument.h"
@@ -86,6 +92,8 @@
 #include <QPainter>
 #include <QPen>
 #include <QString>
+
+#include <set>
 #include <QTcpSocket>
 
 #include <algorithm>
@@ -733,6 +741,31 @@ void McpServerBridge::registerHandlers()
   m_handlers["layer.list"] = [this](const auto& p) { return layerList(p); };
   m_handlers["group.create"] = [this](const auto& p) { return groupCreate(p); };
   m_handlers["group.ungroup"] = [this](const auto& p) { return groupUngroup(p); };
+
+  m_handlers["geo.get_brush_topology"] = [this](const auto& p) { return geoGetBrushTopology(p); };
+  m_handlers["geo.move_vertices"] = [this](const auto& p) { return geoMoveVertices(p); };
+  m_handlers["geo.move_edges"] = [this](const auto& p) { return geoMoveEdges(p); };
+  m_handlers["geo.move_faces"] = [this](const auto& p) { return geoMoveFaces(p); };
+  m_handlers["geo.extrude_faces"] = [this](const auto& p) { return geoExtrudeFaces(p); };
+  m_handlers["geo.add_vertex"] = [this](const auto& p) { return geoAddVertex(p); };
+  m_handlers["geo.remove_vertices"] = [this](const auto& p) { return geoRemoveVertices(p); };
+  m_handlers["geo.snap_vertices"] = [this](const auto& p) { return geoSnapVertices(p); };
+  m_handlers["geo.shear"] = [this](const auto& p) { return geoShear(p); };
+  m_handlers["geo.flip"] = [this](const auto& p) { return geoFlip(p); };
+  m_handlers["geo.duplicate_and_transform"] = [this](const auto& p) { return geoDuplicateAndTransform(p); };
+
+  m_handlers["tex.fit_texture"] = [this](const auto& p) { return texFitTexture(p); };
+  m_handlers["tex.align_to_face"] = [this](const auto& p) { return texAlignToFace(p); };
+  m_handlers["tex.align_to_world"] = [this](const auto& p) { return texAlignToWorld(p); };
+  m_handlers["tex.copy_uv_between_faces"] = [this](const auto& p) { return texCopyUvBetweenFaces(p); };
+
+  m_handlers["sel.select_touching"] = [this](const auto& p) { return selSelectTouching(p); };
+  m_handlers["sel.select_inside"] = [this](const auto& p) { return selSelectInside(p); };
+
+  m_handlers["view.isolate_selection"] = [this](const auto& p) { return viewIsolateSelection(p); };
+  m_handlers["view.hide_selection"] = [this](const auto& p) { return viewHideSelection(p); };
+  m_handlers["view.unhide_all"] = [this](const auto& p) { return viewUnhideAll(p); };
+  m_handlers["view.set_render_mode"] = [this](const auto& p) { return viewSetRenderMode(p); };
 
   m_handlers["snapshot.save"] = [this](const auto& p) { return snapshotSave(p); };
   m_handlers["snapshot.list"] = [this](const auto& p) { return snapshotList(p); };
@@ -2854,6 +2887,771 @@ void McpServerBridge::onWatchedFileChanged(const QString& path)
     }
     armFileWatcher(path.toStdString());
   });
+}
+
+
+// ---------------------------------------------------------------------------
+// native sculpting: vertex / edge / face (2026.2 free functions)
+// ---------------------------------------------------------------------------
+
+QJsonObject McpServerBridge::geoGetBrushTopology(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+  (void)m;
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  if (ids.empty())
+  {
+    throw McpError{mcp::ErrorCode::InvalidParams, "ids[] is required"};
+  }
+
+  auto missing = std::vector<std::string>{};
+  const auto nodes = m_index.resolve(ids, missing);
+
+  auto brushes = QJsonArray{};
+  for (auto* node : nodes)
+  {
+    auto* brushNode = dynamic_cast<mdl::BrushNode*>(node);
+    if (brushNode == nullptr)
+    {
+      continue;
+    }
+    const auto& geometry = brushNode->brush();
+
+    auto vertices = std::vector<vm::vec3d>{};
+    for (const auto* vertex : geometry.vertices())
+    {
+      vertices.push_back(vertex->position());
+    }
+
+    const auto indexOf = [&](const vm::vec3d& q) -> int {
+      for (size_t i = 0; i < vertices.size(); ++i)
+      {
+        if (vm::length(vertices[i] - q) < 1e-3)
+        {
+          return static_cast<int>(i);
+        }
+      }
+      return -1;
+    };
+
+    auto vertexJson = QJsonArray{};
+    for (const auto& v : vertices)
+    {
+      vertexJson.append(mcp::vec3ToJson(v));
+    }
+
+    auto faces = QJsonArray{};
+    auto edges = QJsonArray{};
+    auto seenEdges = std::set<std::pair<int, int>>{};
+
+    for (size_t fi = 0; fi < geometry.faceCount(); ++fi)
+    {
+      const auto& face = geometry.face(fi);
+      const auto positions = face.vertexPositions();
+
+      auto indices = QJsonArray{};
+      for (const auto& point : positions)
+      {
+        const auto index = indexOf(point);
+        indices.append(index);
+      }
+
+      auto faceJson = QJsonObject{};
+      faceJson.insert(QLatin1String{"index"}, static_cast<int>(fi));
+      faceJson.insert(
+        QLatin1String{"material"}, QString::fromStdString(face.attributes().materialName()));
+      faceJson.insert(
+        QLatin1String{"normal"},
+        mcp::vec3ToJson(vm::vec3d{face.normal().x(), face.normal().y(), face.normal().z()}));
+      faceJson.insert(
+        QLatin1String{"distance"}, static_cast<double>(face.boundary().distance));
+      faceJson.insert(QLatin1String{"vertex_indices"}, indices);
+      faceJson.insert(
+        QLatin1String{"uv_offset"},
+        QJsonArray{
+          static_cast<double>(face.attributes().offset().x()),
+          static_cast<double>(face.attributes().offset().y())});
+      faceJson.insert(
+        QLatin1String{"uv_scale"},
+        QJsonArray{
+          static_cast<double>(face.attributes().scale().x()),
+          static_cast<double>(face.attributes().scale().y())});
+      faceJson.insert(
+        QLatin1String{"uv_rotation"}, static_cast<double>(face.attributes().rotation()));
+
+      auto points = QJsonArray{};
+      for (const auto& point : positions)
+      {
+        points.append(mcp::vec3ToJson(point));
+      }
+      faceJson.insert(QLatin1String{"plane_points"}, points);
+      faces.append(faceJson);
+
+      const auto count = indices.size();
+      for (int i = 0; i < count; ++i)
+      {
+        const auto a = indices.at(i).toInt();
+        const auto b = indices.at((i + 1) % count).toInt();
+        if (a < 0 || b < 0)
+        {
+          continue;
+        }
+        const auto key = std::minmax(a, b);
+        if (seenEdges.insert({key.first, key.second}).second)
+        {
+          edges.append(QJsonArray{a, b});
+        }
+      }
+    }
+
+    auto entry = QJsonObject{};
+    entry.insert(QLatin1String{"id"}, QString::fromStdString(m_index.idOf(brushNode)));
+    entry.insert(QLatin1String{"vertices"}, vertexJson);
+    entry.insert(QLatin1String{"faces"}, faces);
+    entry.insert(QLatin1String{"edges"}, edges);
+    brushes.append(entry);
+  }
+
+  auto result = QJsonObject{};
+  result.insert(QLatin1String{"brushes"}, brushes);
+  result.insert(QLatin1String{"missing"}, jsonFromStringVector(missing));
+  return result;
+}
+
+QJsonObject McpServerBridge::geoMoveVertices(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  auto missing = std::vector<std::string>{};
+  selectOnly(m_index.resolve(ids, missing));
+
+  auto positions = std::vector<vm::vec3d>{};
+  for (const auto& value : p.value(QLatin1String{"vertices"}).toArray())
+  {
+    positions.push_back(mcp::vec3FromJson(value));
+  }
+  if (positions.empty())
+  {
+    throw McpError{mcp::ErrorCode::InvalidParams, "vertices[] is required"};
+  }
+
+  auto delta = mcp::vec3FromJson(p.value(QLatin1String{"delta"}));
+  const auto grid = static_cast<int>(mcp::numberFromJson(p.value(QLatin1String{"grid"})));
+  if (grid > 1)
+  {
+    delta = snapVector(delta, grid);
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP geo.move_vertices"};
+  const auto outcome =
+    mdl::transformVertices(m, positions, vm::translation_matrix(delta));
+  transaction.finish(outcome.success);
+
+  if (!outcome.success)
+  {
+    throw McpError{
+      mcp::ErrorCode::OperationFailed,
+      "vertex move produced a non-convex or degenerate brush and was rolled back"};
+  }
+
+  return QJsonObject{
+    {QLatin1String{"moved"}, static_cast<int>(positions.size())},
+    {QLatin1String{"hasRemainingVertices"}, outcome.hasRemainingVertices}};
+}
+
+QJsonObject McpServerBridge::geoMoveEdges(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  auto missing = std::vector<std::string>{};
+  selectOnly(m_index.resolve(ids, missing));
+
+  auto edges = std::vector<vm::segment3d>{};
+  for (const auto& value : p.value(QLatin1String{"edges"}).toArray())
+  {
+    const auto pair = value.toArray();
+    if (pair.size() < 2)
+    {
+      continue;
+    }
+    edges.emplace_back(mcp::vec3FromJson(pair.at(0)), mcp::vec3FromJson(pair.at(1)));
+  }
+  if (edges.empty())
+  {
+    throw McpError{
+      mcp::ErrorCode::InvalidParams, "edges[] must be [[p1, p2], ...]"};
+  }
+
+  auto delta = mcp::vec3FromJson(p.value(QLatin1String{"delta"}));
+  const auto grid = static_cast<int>(mcp::numberFromJson(p.value(QLatin1String{"grid"})));
+  if (grid > 1)
+  {
+    delta = snapVector(delta, grid);
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP geo.move_edges"};
+  const auto ok = mdl::transformEdges(m, edges, vm::translation_matrix(delta));
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "edge move failed and was rolled back"};
+  }
+
+  return QJsonObject{{QLatin1String{"moved"}, static_cast<int>(edges.size())}};
+}
+
+QJsonObject McpServerBridge::geoMoveFaces(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  auto missing = std::vector<std::string>{};
+  selectOnly(m_index.resolve(ids, missing));
+
+  auto faces = std::vector<vm::polygon3d>{};
+  for (const auto& value : p.value(QLatin1String{"faces"}).toArray())
+  {
+    auto points = std::vector<vm::vec3d>{};
+    for (const auto& point : value.toArray())
+    {
+      points.push_back(mcp::vec3FromJson(point));
+    }
+    if (points.size() >= 3)
+    {
+      faces.emplace_back(std::move(points));
+    }
+  }
+  if (faces.empty())
+  {
+    throw McpError{
+      mcp::ErrorCode::InvalidParams, "faces[] must be [[p1, p2, p3, ...], ...]"};
+  }
+
+  const auto delta = mcp::vec3FromJson(p.value(QLatin1String{"delta"}));
+
+  auto transaction = mdl::Transaction{m, "MCP geo.move_faces"};
+  const auto ok = mdl::transformFaces(m, faces, vm::translation_matrix(delta));
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "face move failed and was rolled back"};
+  }
+
+  return QJsonObject{{QLatin1String{"moved"}, static_cast<int>(faces.size())}};
+}
+
+QJsonObject McpServerBridge::geoExtrudeFaces(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  auto missing = std::vector<std::string>{};
+  const auto nodes = m_index.resolve(ids, missing);
+
+  auto faces = std::vector<vm::polygon3d>{};
+  auto handles = std::vector<mdl::BrushFaceHandle>{};
+
+  for (const auto& value : p.value(QLatin1String{"faces"}).toArray())
+  {
+    auto points = std::vector<vm::vec3d>{};
+    for (const auto& point : value.toArray())
+    {
+      points.push_back(mcp::vec3FromJson(point));
+    }
+    if (points.size() >= 3)
+    {
+      faces.emplace_back(vm::polygon3d{points});
+    }
+  }
+
+  if (faces.empty() && !nodes.empty())
+  {
+    // no explicit faces: extrude every face of the targeted brushes
+    for (auto* node : nodes)
+    {
+      if (auto* brushNode = dynamic_cast<mdl::BrushNode*>(node))
+      {
+        for (size_t i = 0; i < brushNode->brush().faceCount(); ++i)
+        {
+          faces.push_back(brushNode->brush().face(i).polygon());
+          handles.emplace_back(brushNode, i);
+        }
+      }
+    }
+  }
+
+  if (faces.empty())
+  {
+    throw McpError{
+      mcp::ErrorCode::InvalidParams, "provide faces[] or ids[] of brushes to extrude"};
+  }
+
+  const auto delta = mcp::vec3FromJson(
+    p.value(QLatin1String{"delta"}),
+    vm::vec3d{0, 0, mcp::numberFromJson(p.value(QLatin1String{"distance"}), 16.0)});
+
+  selectOnly(nodes);
+  auto transaction = mdl::Transaction{m, "MCP geo.extrude_faces"};
+  const auto ok = mdl::extrudeBrushes(m, faces, delta);
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "face extrusion failed"};
+  }
+
+  auto created = std::vector<mdl::Node*>{};
+  for (auto* node : m.selection().nodes)
+  {
+    created.push_back(node);
+  }
+
+  return QJsonObject{
+    {QLatin1String{"extruded"}, static_cast<int>(faces.size())},
+    {QLatin1String{"ids"}, jsonFromStringVector(stampIds(created))}};
+}
+
+QJsonObject McpServerBridge::geoAddVertex(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  auto missing = std::vector<std::string>{};
+  selectOnly(m_index.resolve(ids, missing));
+
+  const auto position = mcp::vec3FromJson(p.value(QLatin1String{"position"}));
+
+  auto transaction = mdl::Transaction{m, "MCP geo.add_vertex"};
+  const auto ok = mdl::addVertex(m, position);
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "could not add the vertex"};
+  }
+  return QJsonObject{{QLatin1String{"added"}, true}};
+}
+
+QJsonObject McpServerBridge::geoRemoveVertices(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  auto missing = std::vector<std::string>{};
+  selectOnly(m_index.resolve(ids, missing));
+
+  auto positions = std::vector<vm::vec3d>{};
+  for (const auto& value : p.value(QLatin1String{"vertices"}).toArray())
+  {
+    positions.push_back(mcp::vec3FromJson(value));
+  }
+  if (positions.empty())
+  {
+    throw McpError{mcp::ErrorCode::InvalidParams, "vertices[] is required"};
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP geo.remove_vertices"};
+  const auto ok = mdl::removeVertices(m, "Remove vertices", positions);
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "could not remove the vertices"};
+  }
+  return QJsonObject{{QLatin1String{"removed"}, static_cast<int>(positions.size())}};
+}
+
+QJsonObject McpServerBridge::geoSnapVertices(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  if (!ids.empty())
+  {
+    auto missing = std::vector<std::string>{};
+    selectOnly(m_index.resolve(ids, missing));
+  }
+
+  const auto grid = mcp::numberFromJson(p.value(QLatin1String{"grid"}), 1.0);
+  if (grid <= 0.0)
+  {
+    throw McpError{mcp::ErrorCode::InvalidParams, "grid must be > 0"};
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP geo.snap_vertices"};
+  const auto ok = mdl::snapVertices(m, grid);
+  transaction.finish(ok);
+
+  return QJsonObject{
+    {QLatin1String{"snapped"}, ok}, {QLatin1String{"grid"}, grid}};
+}
+
+QJsonObject McpServerBridge::geoShear(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  if (!ids.empty())
+  {
+    auto missing = std::vector<std::string>{};
+    selectOnly(m_index.resolve(ids, missing));
+  }
+  if (m.selection().nodes.empty())
+  {
+    throw McpError{mcp::ErrorCode::NoSelection, "nothing selected"};
+  }
+
+  const auto& bounds = m.selectionBounds();
+  if (!bounds)
+  {
+    throw McpError{mcp::ErrorCode::NoSelection, "selection has no bounds"};
+  }
+
+  const auto side = mcp::vec3FromJson(p.value(QLatin1String{"side"}), vm::vec3d{1, 0, 0});
+  const auto delta = mcp::vec3FromJson(p.value(QLatin1String{"delta"}));
+
+  auto transaction = mdl::Transaction{m, "MCP geo.shear"};
+  const auto ok = mdl::shearSelection(m, *bounds, side, delta);
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "shear failed"};
+  }
+
+  auto nodes = std::vector<mdl::Node*>{m.selection().nodes};
+  return QJsonObject{{QLatin1String{"ids"}, jsonFromStringVector(stampIds(nodes))}};
+}
+
+QJsonObject McpServerBridge::geoFlip(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto ids = mcp::stringArrayFromJson(p.value(QLatin1String{"ids"}));
+  if (!ids.empty())
+  {
+    auto missing = std::vector<std::string>{};
+    selectOnly(m_index.resolve(ids, missing));
+  }
+  if (m.selection().nodes.empty())
+  {
+    throw McpError{mcp::ErrorCode::NoSelection, "nothing selected"};
+  }
+
+  const auto axisName = mcp::stringFromJson(p.value(QLatin1String{"axis"}), "x");
+  const auto axis = axisName == "y" ? vm::axis::y
+                    : axisName == "z" ? vm::axis::z
+                                      : vm::axis::x;
+
+  auto center = vm::vec3d{0, 0, 0};
+  if (const auto& bounds = m.selectionBounds())
+  {
+    center = bounds->center();
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP geo.flip " + axisName};
+  const auto ok = mdl::flipSelection(m, center, axis);
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "flip failed"};
+  }
+
+  auto nodes = std::vector<mdl::Node*>{m.selection().nodes};
+  return QJsonObject{{QLatin1String{"ids"}, jsonFromStringVector(stampIds(nodes))}};
+}
+
+QJsonObject McpServerBridge::geoDuplicateAndTransform(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  if (m.selection().nodes.empty())
+  {
+    throw McpError{
+      mcp::ErrorCode::NoSelection,
+      "select the source geometry (ids[]) before radial duplication"};
+  }
+
+  const auto count = static_cast<int>(mcp::numberFromJson(p.value(QLatin1String{"count"}), 1.0));
+  if (count < 1 || count > 512)
+  {
+    throw McpError{mcp::ErrorCode::InvalidParams, "count must be 1..512"};
+  }
+
+  const auto translate = mcp::vec3FromJson(p.value(QLatin1String{"translate"}));
+
+  auto rotate = false;
+  auto center = vm::vec3d{0, 0, 0};
+  auto axis = vm::vec3d{0, 0, 1};
+  auto degrees = 0.0;
+  if (const auto value = p.value(QLatin1String{"rotate"}); value.isObject())
+  {
+    const auto rotation = value.toObject();
+    center = mcp::vec3FromJson(rotation.value(QLatin1String{"center"}));
+    axis = mcp::vec3FromJson(rotation.value(QLatin1String{"axis"}), vm::vec3d{0, 0, 1});
+    degrees = mcp::numberFromJson(rotation.value(QLatin1String{"degrees"}), 0.0);
+    rotate = degrees != 0.0;
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP geo.duplicate_and_transform"};
+  auto created = std::vector<mdl::Node*>{};
+
+  for (int i = 0; i < count; ++i)
+  {
+    mdl::duplicateSelectedNodes(m);
+    if (rotate)
+    {
+      mdl::rotateSelection(m, center, vm::normalize(axis), degrees * Pi / 180.0);
+    }
+    if (translate != vm::vec3d{0, 0, 0})
+    {
+      mdl::translateSelection(m, translate);
+    }
+    for (auto* node : m.selection().nodes)
+    {
+      created.push_back(node);
+    }
+  }
+  transaction.commit();
+
+  return QJsonObject{
+    {QLatin1String{"copies"}, count},
+    {QLatin1String{"ids"}, jsonFromStringVector(stampIds(created))}};
+}
+
+// ---------------------------------------------------------------------------
+// native UV tools
+// ---------------------------------------------------------------------------
+
+QJsonObject McpServerBridge::texFitTexture(const QJsonObject& p)
+{
+  auto& m = map();
+
+  const auto direction = mcp::stringFromJson(p.value(QLatin1String{"direction"}), "both");
+  const auto fitDirection = direction == "horizontal" ? mdl::UvFitDirection::Horizontal
+                             : direction == "vertical" ? mdl::UvFitDirection::Vertical
+                                                       : mdl::UvFitDirection::Horizontal;
+
+  auto transaction = mdl::Transaction{m, "MCP tex.fit_texture"};
+  mdl::fitUV(m, fitDirection, mdl::UvPolicy::best, mdl::UvFitMode::fitToFace);
+  transaction.commit();
+
+  return QJsonObject{
+    {QLatin1String{"fitted"}, true},
+    {QLatin1String{"direction"}, QString::fromStdString(direction)}};
+}
+
+QJsonObject McpServerBridge::texAlignToFace(const QJsonObject& p)
+{
+  (void)p;
+  auto& m = map();
+  auto transaction = mdl::Transaction{m, "MCP tex.align_to_face"};
+  mdl::alignUV(m, mdl::UvPolicy::best);
+  transaction.commit();
+  return QJsonObject{{QLatin1String{"aligned"}, QLatin1String{"face"}}};
+}
+
+QJsonObject McpServerBridge::texAlignToWorld(const QJsonObject& p)
+{
+  (void)p;
+  auto& m = map();
+
+  auto update = mdl::UpdateBrushFaceAttributes{};
+  update.axis = mdl::AxisOp{mdl::ToParaxial{}};
+
+  auto transaction = mdl::Transaction{m, "MCP tex.align_to_world"};
+  const auto ok = mdl::setBrushFaceAttributes(m, update);
+  transaction.finish(ok);
+
+  return QJsonObject{
+    {QLatin1String{"aligned"}, QLatin1String{"world"}}, {QLatin1String{"applied"}, ok}};
+}
+
+QJsonObject McpServerBridge::texCopyUvBetweenFaces(const QJsonObject& p)
+{
+  auto& m = map();
+  m_index.rebuild(document());
+
+  const auto sourceId = mcp::stringFromJson(p.value(QLatin1String{"source_id"}));
+  const auto sourceFaceIndex =
+    static_cast<size_t>(mcp::numberFromJson(p.value(QLatin1String{"source_face"}), 0.0));
+
+  auto* sourceNode = m_index.find(sourceId);
+  auto* sourceBrush = dynamic_cast<mdl::BrushNode*>(sourceNode);
+  if (sourceBrush == nullptr || sourceFaceIndex >= sourceBrush->brush().faceCount())
+  {
+    throw McpError{mcp::ErrorCode::InvalidParams, "source_id / source_face not found"};
+  }
+  const auto& sourceFace = sourceBrush->brush().face(sourceFaceIndex);
+  auto snapshot = sourceFace.takeUVCoordSystemSnapshot();
+
+  auto handles = std::vector<mdl::BrushFaceHandle>{};
+  const auto targetIds = mcp::stringArrayFromJson(p.value(QLatin1String{"target_ids"}));
+  for (const auto& id : targetIds)
+  {
+    auto* node = m_index.find(id);
+    auto* brushNode = dynamic_cast<mdl::BrushNode*>(node);
+    if (brushNode == nullptr)
+    {
+      continue;
+    }
+    for (size_t i = 0; i < brushNode->brush().faceCount(); ++i)
+    {
+      handles.emplace_back(brushNode, i);
+    }
+  }
+
+  if (handles.empty())
+  {
+    handles = m.selection().brushFaces;
+  }
+  if (handles.empty())
+  {
+    throw McpError{
+      mcp::ErrorCode::NoSelection,
+      "provide target_ids[] or select the target faces first"};
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP tex.copy_uv"};
+  mdl::selectBrushFaces(m, handles);
+  const auto ok = mdl::copyUV(
+    m,
+    *snapshot,
+    sourceFace.attributes(),
+    sourceFace.boundary(),
+    mdl::WrapStyle::Projection);
+  transaction.finish(ok);
+  if (!ok)
+  {
+    throw McpError{mcp::ErrorCode::OperationFailed, "copyUV failed"};
+  }
+
+  return QJsonObject{
+    {QLatin1String{"faces"}, static_cast<int>(handles.size())},
+    {QLatin1String{"source"}, QString::fromStdString(sourceId)}};
+}
+
+// ---------------------------------------------------------------------------
+// native spatial selection
+// ---------------------------------------------------------------------------
+
+QJsonObject McpServerBridge::selSelectTouching(const QJsonObject& p)
+{
+  auto& m = map();
+  if (m.selection().nodes.empty())
+  {
+    throw McpError{mcp::ErrorCode::NoSelection, "select a seed brush first"};
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP sel.select_touching"};
+  mdl::selectTouchingNodes(m, mcp::boolFromJson(p.value(QLatin1String{"delete"}), false));
+  transaction.commit();
+
+  m_index.rebuild(document());
+  auto nodes = std::vector<mdl::Node*>{m.selection().nodes};
+
+  return QJsonObject{
+    {QLatin1String{"selected"}, static_cast<int>(nodes.size())},
+    {QLatin1String{"ids"}, jsonFromStringVector(stampIds(nodes))}};
+}
+
+QJsonObject McpServerBridge::selSelectInside(const QJsonObject& p)
+{
+  auto& m = map();
+  if (m.selection().nodes.empty())
+  {
+    throw McpError{
+      mcp::ErrorCode::NoSelection, "select the enclosing brushes first"};
+  }
+
+  auto transaction = mdl::Transaction{m, "MCP sel.select_inside"};
+  mdl::selectContainedNodes(m, mcp::boolFromJson(p.value(QLatin1String{"delete"}), false));
+  transaction.commit();
+
+  m_index.rebuild(document());
+  auto nodes = std::vector<mdl::Node*>{m.selection().nodes};
+
+  return QJsonObject{
+    {QLatin1String{"selected"}, static_cast<int>(nodes.size())},
+    {QLatin1String{"ids"}, jsonFromStringVector(stampIds(nodes))}};
+}
+
+// ---------------------------------------------------------------------------
+// visibility / isolation / render mode
+// ---------------------------------------------------------------------------
+
+QJsonObject McpServerBridge::viewIsolateSelection(const QJsonObject& p)
+{
+  (void)p;
+  auto& m = map();
+  if (m.selection().nodes.empty())
+  {
+    throw McpError{mcp::ErrorCode::NoSelection, "nothing selected to isolate"};
+  }
+  auto transaction = mdl::Transaction{m, "MCP view.isolate_selection"};
+  mdl::isolateSelectedNodes(m);
+  transaction.commit();
+  return QJsonObject{{QLatin1String{"isolated"}, static_cast<int>(m.selection().nodes.size())}};
+}
+
+QJsonObject McpServerBridge::viewHideSelection(const QJsonObject& p)
+{
+  (void)p;
+  auto& m = map();
+  if (m.selection().nodes.empty())
+  {
+    throw McpError{mcp::ErrorCode::NoSelection, "nothing selected to hide"};
+  }
+  auto transaction = mdl::Transaction{m, "MCP view.hide_selection"};
+  mdl::hideSelectedNodes(m);
+  transaction.commit();
+  return QJsonObject{{QLatin1String{"hidden"}, true}};
+}
+
+QJsonObject McpServerBridge::viewUnhideAll(const QJsonObject& p)
+{
+  (void)p;
+  auto& m = map();
+  auto transaction = mdl::Transaction{m, "MCP view.unhide_all"};
+  mdl::showAllNodes(m);
+  transaction.commit();
+  return QJsonObject{{QLatin1String{"visible"}, QLatin1String{"all"}}};
+}
+
+QJsonObject McpServerBridge::viewSetRenderMode(const QJsonObject& p)
+{
+  auto& prefs = PreferenceManager::instance();
+  auto applied = QJsonObject{};
+
+  if (p.contains(QLatin1String{"edges"}))
+  {
+    const auto value = mcp::boolFromJson(p.value(QLatin1String{"edges"}));
+    prefs.set(Preferences::ShowEdges, value);
+    applied.insert(QLatin1String{"edges"}, value);
+  }
+  if (p.contains(QLatin1String{"shade_faces"}))
+  {
+    const auto value = mcp::boolFromJson(p.value(QLatin1String{"shade_faces"}));
+    prefs.set(Preferences::ShadeFaces, value);
+    applied.insert(QLatin1String{"shade_faces"}, value);
+  }
+
+  if (auto* view = requireWindow().findChild<MapView3D*>())
+  {
+    static_cast<MapViewBase*>(view)->update();
+  }
+
+  return applied;
 }
 
 } // namespace tb::ui

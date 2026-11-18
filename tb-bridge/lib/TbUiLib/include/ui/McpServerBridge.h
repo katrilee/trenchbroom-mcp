@@ -176,6 +176,32 @@ private:
   QJsonObject groupCreate(const QJsonObject& p);
   QJsonObject groupUngroup(const QJsonObject& p);
 
+  // native sculpting (2026.2 free functions)
+  QJsonObject geoGetBrushTopology(const QJsonObject& p);
+  QJsonObject geoMoveVertices(const QJsonObject& p);
+  QJsonObject geoMoveEdges(const QJsonObject& p);
+  QJsonObject geoMoveFaces(const QJsonObject& p);
+  QJsonObject geoExtrudeFaces(const QJsonObject& p);
+  QJsonObject geoAddVertex(const QJsonObject& p);
+  QJsonObject geoRemoveVertices(const QJsonObject& p);
+  QJsonObject geoSnapVertices(const QJsonObject& p);
+  QJsonObject geoShear(const QJsonObject& p);
+  QJsonObject geoFlip(const QJsonObject& p);
+  QJsonObject geoDuplicateAndTransform(const QJsonObject& p);
+
+  QJsonObject texFitTexture(const QJsonObject& p);
+  QJsonObject texAlignToFace(const QJsonObject& p);
+  QJsonObject texAlignToWorld(const QJsonObject& p);
+  QJsonObject texCopyUvBetweenFaces(const QJsonObject& p);
+
+  QJsonObject selSelectTouching(const QJsonObject& p);
+  QJsonObject selSelectInside(const QJsonObject& p);
+
+  QJsonObject viewIsolateSelection(const QJsonObject& p);
+  QJsonObject viewHideSelection(const QJsonObject& p);
+  QJsonObject viewUnhideAll(const QJsonObject& p);
+  QJsonObject viewSetRenderMode(const QJsonObject& p);
+
   // snapshots + auto reload
   QJsonObject snapshotSave(const QJsonObject& p);
   QJsonObject snapshotList(const QJsonObject& p);
