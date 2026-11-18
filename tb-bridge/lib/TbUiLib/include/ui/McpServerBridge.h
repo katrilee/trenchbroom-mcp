@@ -96,6 +96,9 @@ public:
   QJsonObject dispatch(const std::string& method, const QJsonObject& params);
 
   static McpServerBridge* instance();
+
+  /** Storage for the singleton; assigned in the constructor. */
+  static McpServerBridge*& instanceRef();
   static McpServerBridge* attachTo(MapWindow& window);
 
   /**

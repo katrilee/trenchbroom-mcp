@@ -260,6 +260,8 @@ McpServerBridge::McpServerBridge(MapWindow* window, QObject* parent)
     m_authToken = token;
   }
 
+  instanceRef() = this;
+
   connect(&m_server, &QTcpServer::newConnection, this, &McpServerBridge::onNewConnection);
   connect(
     &m_watcher,
@@ -271,6 +273,10 @@ McpServerBridge::McpServerBridge(MapWindow* window, QObject* parent)
 McpServerBridge::~McpServerBridge()
 {
   stop();
+  if (instanceRef() == this)
+  {
+    instanceRef() = nullptr;
+  }
 }
 
 bool McpServerBridge::start(const quint16 port)
@@ -335,10 +341,15 @@ QJsonObject McpServerBridge::info() const
   return result;
 }
 
-McpServerBridge* McpServerBridge::instance()
+McpServerBridge*& McpServerBridge::instanceRef()
 {
   static McpServerBridge* bridge = nullptr;
   return bridge;
+}
+
+McpServerBridge* McpServerBridge::instance()
+{
+  return instanceRef();
 }
 
 McpServerBridge* McpServerBridge::attachTo(MapWindow& window)
